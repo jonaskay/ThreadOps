@@ -1,0 +1,1072 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<spec name="ThreadOps" version="1.0">
+
+  <overview>
+    ThreadOps is a self-hosted Slack bot that listens for app mentions inside
+    threads, feeds the thread transcript to a configurable LLM, and files the
+    resulting content as a GitHub issue. It runs on Google Cloud Platform using
+    two Cloud Run services decoupled by a Pub/Sub topic. All infrastructure is
+    provisioned with Terraform. The application is written entirely in Go.
+  </overview>
+
+  <!-- ============================================================ -->
+  <!--  ARCHITECTURE                                                 -->
+  <!-- ============================================================ -->
+  <architecture>
+
+    <principle>Two focused Cloud Run services separated by a Pub/Sub topic.
+    The webhook service must return 200 OK to Slack within 3 seconds. All
+    real work happens asynchronously in the processor service.</principle>
+
+    <data_flow>
+      <step order="1">User mentions @ThreadOps inside a Slack thread.</step>
+      <step order="2">Slack sends POST /slack/events to the webhook service.</step>
+      <step order="3">Webhook service verifies the HMAC signature.</step>
+      <step order="4">Webhook service publishes the raw Slack event JSON to
+      the Pub/Sub topic threadops-events.</step>
+      <step order="5">Webhook service returns 200 OK immediately.</step>
+      <step order="6">Pub/Sub push subscription delivers the message to
+      POST /pubsub/push on the processor service.</step>
+      <step order="7">Processor service fetches all messages in the thread
+      via Slack conversations.replies, handling pagination.</step>
+      <step order="8">Processor service formats the messages into a plain-text
+      transcript: [timestamp] @username: message text</step>
+      <step order="9">Processor service sends the transcript to the configured
+      LLM and receives a structured JSON response containing title, body,
+      and labels.</step>
+      <step order="10">Processor service creates a GitHub issue using the
+      structured content.</step>
+      <step order="11">Processor service posts the new issue URL as a reply
+      in the original Slack thread.</step>
+    </data_flow>
+
+    <services>
+      <service name="threadops-webhook">
+        <role>Receive and verify Slack events. Publish to Pub/Sub.
+        Return 200 OK fast.</role>
+        <ingress>Public. Slack must be able to reach it.</ingress>
+        <endpoint method="POST" path="/slack/events" />
+      </service>
+      <service name="threadops-processor">
+        <role>Consume Pub/Sub messages. Fetch thread. Call LLM. Create GitHub
+        issue. Post Slack reply.</role>
+        <ingress>Internal only. Only reachable by the Pub/Sub push
+        subscription.</ingress>
+        <endpoint method="POST" path="/pubsub/push" />
+      </service>
+    </services>
+
+  </architecture>
+
+  <!-- ============================================================ -->
+  <!--  REPOSITORY STRUCTURE                                         -->
+  <!-- ============================================================ -->
+  <repository_structure>
+
+    <tree>
+      threadops/
+      ├── go.work                    ← workspace file for local development only
+      ├── internal/                  ← shared library module
+      │   ├── go.mod                 ← module: github.com/you/threadops/internal
+      │   ├── go.sum
+      │   ├── config/
+      │   │   └── config.go
+      │   ├── slack/
+      │   │   ├── client.go
+      │   │   ├── verifier.go
+      │   │   └── types.go
+      │   ├── github/
+      │   │   └── client.go
+      │   └── llm/
+      │       ├── provider.go
+      │       ├── anthropic.go
+      │       ├── openai.go
+      │       └── gemini.go
+      ├── services/
+      │   ├── webhook/               ← independent deployable module
+      │   │   ├── go.mod             ← module: github.com/you/threadops/webhook
+      │   │   ├── go.sum
+      │   │   ├── main.go
+      │   │   ├── handler.go
+      │   │   └── Dockerfile
+      │   └── processor/             ← independent deployable module
+      │       ├── go.mod             ← module: github.com/you/threadops/processor
+      │       ├── go.sum
+      │       ├── main.go
+      │       ├── handler.go
+      │       └── Dockerfile
+      ├── local/
+      │   ├── docker-compose.yml     ← emulator + both services
+      │   ├── .env.example           ← template with all required variables
+      │   └── setup-pubsub.sh        ← creates topic and push subscription on emulator
+      ├── e2e/
+      │   ├── go.mod                 ← module: github.com/you/threadops/e2e
+      │   ├── go.sum
+      │   └── e2e_test.go            ← full pipeline test suite
+      ├── terraform/
+      │   ├── main.tf
+      │   ├── cloud_run.tf
+      │   ├── pubsub.tf
+      │   ├── secrets.tf
+      │   ├── iam.tf
+      │   └── variables.tf
+      └── README.md
+    </tree>
+
+    <go_workspace>
+      <description>Go 1.18+ workspaces allow the three modules to reference
+      each other by local path during development without publishing anything.
+      The go.work file is used locally only and is not needed inside Docker
+      image builds.</description>
+
+      <file name="go.work" location="threadops/go.work">
+        go 1.23
+
+        use (
+            ./internal
+            ./services/webhook
+            ./services/processor
+            ./e2e
+        )
+      </file>
+
+      <file name="go.mod" location="services/webhook/go.mod">
+        <description>Declares the webhook as its own module. References the
+        internal shared library via a replace directive so the Docker build
+        context resolves the local path correctly without needing go.work
+        inside the container.</description>
+        <replace_directive>
+          require github.com/you/threadops/internal v0.0.0
+          replace github.com/you/threadops/internal => ../../internal
+        </replace_directive>
+        <external_deps>cloud.google.com/go/pubsub</external_deps>
+      </file>
+
+      <file name="go.mod" location="services/processor/go.mod">
+        <description>Declares the processor as its own module. Same replace
+        directive pattern as the webhook module.</description>
+        <replace_directive>
+          require github.com/you/threadops/internal v0.0.0
+          replace github.com/you/threadops/internal => ../../internal
+        </replace_directive>
+        <external_deps>cloud.google.com/go/pubsub</external_deps>
+      </file>
+
+      <file name="go.mod" location="internal/go.mod">
+        <description>Declares the shared library as its own module. Contains
+        all GCP SDK dependencies since both services consume them via this
+        module.</description>
+        <external_deps>
+          cloud.google.com/go/pubsub,
+          cloud.google.com/go/secretmanager
+        </external_deps>
+      </file>
+    </go_workspace>
+
+  </repository_structure>
+
+  <!-- ============================================================ -->
+  <!--  LANGUAGE AND DEPENDENCIES                                    -->
+  <!-- ============================================================ -->
+  <dependencies>
+
+    <language>Go 1.23+</language>
+
+    <philosophy>Minimise external dependencies. Use Go stdlib for all HTTP
+    clients, crypto, and JSON handling. Only pull in external packages where
+    reimplementing would mean rewriting complex GCP protocol logic with no
+    benefit.</philosophy>
+
+    <module_structure>
+      <description>Three separate Go modules, one per deployable unit plus
+      one for the shared library. Each service module has its own go.mod and
+      go.sum. This means each Docker image build only pulls the dependencies
+      it actually needs, and a dependency change in one service cannot break
+      the other.</description>
+      <module path="internal"
+        name="github.com/you/threadops/internal"
+        owns="All shared packages: config, slack, github, llm." />
+      <module path="services/webhook"
+        name="github.com/you/threadops/webhook"
+        owns="Webhook HTTP server binary." />
+      <module path="services/processor"
+        name="github.com/you/threadops/processor"
+        owns="Processor HTTP server binary." />
+    </module_structure>
+
+    <external_packages>
+      <package name="cloud.google.com/go/pubsub" module="internal" keep="true">
+        Pub/Sub publishing from the webhook service. Lives in the internal
+        module so both services inherit it via the shared dependency.
+      </package>
+      <package name="cloud.google.com/go/secretmanager" module="internal"
+        keep="true">
+        Reading secrets at startup from Secret Manager.
+      </package>
+    </external_packages>
+
+    <dropped_packages>
+      <package name="slack-go/slack">Replaced by internal/slack.</package>
+      <package name="google/go-github">Replaced by internal/github.</package>
+      <package name="kelseyhightower/envconfig">Replaced by
+      internal/config.</package>
+      <package name="chi router">Replaced by stdlib net/http
+      ServeMux.</package>
+    </dropped_packages>
+
+  </dependencies>
+
+  <!-- ============================================================ -->
+  <!--  INTERNAL PACKAGES                                            -->
+  <!-- ============================================================ -->
+  <internal_packages>
+
+    <package path="internal/config">
+      <file name="config.go">
+        <description>Loads all configuration from environment variables.
+        Defines a single Config struct covering all fields needed by both
+        services. The Load() function calls os.Getenv for each field
+        explicitly, collects all missing required variables, and returns a
+        single descriptive error listing every missing field. No reflection,
+        no struct tags, no magic.</description>
+        <exports>
+          <symbol kind="struct" name="Config">
+            Fields: SlackBotToken, SlackSigningSecret, GitHubToken,
+            GitHubRepo, LLMProvider, LLMModel, LLMAPIKey, PubSubTopic.
+          </symbol>
+          <symbol kind="function" name="Load() (*Config, error)">
+            Reads env vars, validates required fields, returns populated
+            Config or an error listing all missing variables.
+          </symbol>
+        </exports>
+      </file>
+    </package>
+
+    <package path="internal/slack">
+      <file name="types.go">
+        <description>Minimal structs for the Slack payloads ThreadOps
+        actually uses. No fields beyond what the application needs.</description>
+        <exports>
+          <symbol kind="struct" name="EventCallback">
+            Top-level envelope from Slack Events API. Fields: Token, Type,
+            Challenge, Event.
+          </symbol>
+          <symbol kind="struct" name="Event">
+            Inner event object. Fields: Type, User, Text, Channel, TS,
+            ThreadTS.
+          </symbol>
+          <symbol kind="struct" name="Message">
+            A single message in a thread. Fields: User, Text, TS.
+          </symbol>
+        </exports>
+      </file>
+      <file name="verifier.go">
+        <description>Implements Slack's HMAC-SHA256 request signing
+        verification using only Go stdlib crypto packages. Reads the raw
+        request body bytes and the X-Slack-Signature and
+        X-Slack-Request-Timestamp headers. Rejects requests where the
+        timestamp is more than 5 minutes old to prevent replay
+        attacks.</description>
+        <exports>
+          <symbol kind="function"
+            name="Verify(signingSecret string, r *http.Request, body []byte) error">
+            Returns nil if the signature is valid, an error otherwise.
+          </symbol>
+        </exports>
+      </file>
+      <file name="client.go">
+        <description>HTTP client for Slack Web API calls. Uses stdlib
+        net/http. All requests set Authorization: Bearer {token} and
+        Content-Type: application/json. Responses are decoded into minimal
+        local structs.</description>
+        <exports>
+          <symbol kind="struct" name="Client">
+            Holds the bot token and a *http.Client.
+          </symbol>
+          <symbol kind="function"
+            name="NewClient(token string) *Client" />
+          <symbol kind="function"
+            name="(c *Client) FetchThread(ctx context.Context, channel, threadTS string) ([]Message, error)">
+            Calls conversations.replies. Handles cursor-based pagination in
+            a loop until all messages are retrieved.
+          </symbol>
+          <symbol kind="function"
+            name="(c *Client) PostReply(ctx context.Context, channel, threadTS, text string) error">
+            Calls chat.postMessage with thread_ts to reply in-thread.
+          </symbol>
+        </exports>
+      </file>
+    </package>
+
+    <package path="internal/github">
+      <file name="client.go">
+        <description>HTTP client for the GitHub REST API. Uses stdlib
+        net/http. Authenticates with Authorization: Bearer {token}. Sets
+        Accept: application/vnd.github+json and
+        X-GitHub-Api-Version: 2022-11-28 on every request. Decodes only the
+        fields ThreadOps needs from responses.</description>
+        <exports>
+          <symbol kind="struct" name="Client">
+            Holds the token, owner, repo, and a *http.Client.
+          </symbol>
+          <symbol kind="function"
+            name="NewClient(token, repo string) (*Client, error)">
+            Parses the owner/repo string and returns a configured client.
+          </symbol>
+          <symbol kind="function"
+            name="(c *Client) CreateIssue(ctx context.Context, title, body string, labels []string) (string, error)">
+            POSTs to /repos/{owner}/{repo}/issues. Returns the html_url of
+            the created issue.
+          </symbol>
+        </exports>
+      </file>
+    </package>
+
+    <package path="internal/llm">
+      <file name="provider.go">
+        <description>Defines the Provider interface and a factory function
+        that selects the correct adapter based on the LLM_PROVIDER env var.
+        Also defines the structured output type that all adapters must
+        return.</description>
+        <exports>
+          <symbol kind="interface" name="Provider">
+            Complete(ctx context.Context, systemPrompt, userPrompt string)
+            (IssueContent, error)
+          </symbol>
+          <symbol kind="struct" name="IssueContent">
+            Fields: Title (string), Body (string), Labels ([]string).
+          </symbol>
+          <symbol kind="function"
+            name="NewProvider(cfg *config.Config) (Provider, error)">
+            Returns the correct adapter for the configured provider. Returns
+            an error for unrecognised providers.
+          </symbol>
+        </exports>
+        <system_prompt_contract>
+          All adapters send the same system prompt instructing the LLM to
+          return only a JSON object with no preamble or markdown fences.
+          JSON schema: { "title": string, "body": string,
+          "labels": []string }. The user prompt contains the formatted
+          thread transcript.
+        </system_prompt_contract>
+      </file>
+      <file name="anthropic.go">
+        <description>Adapter for the Anthropic Messages API. Makes a raw
+        HTTP POST to https://api.anthropic.com/v1/messages. Sets
+        x-api-key and anthropic-version headers. Uses the model specified
+        in LLM_MODEL. Parses the text content block from the response and
+        unmarshals it as IssueContent JSON.</description>
+      </file>
+      <file name="openai.go">
+        <description>Adapter for the OpenAI Chat Completions API. Makes a
+        raw HTTP POST to https://api.openai.com/v1/chat/completions. Sets
+        Authorization: Bearer {key}. Uses the model specified in LLM_MODEL.
+        Parses choices[0].message.content and unmarshals as
+        IssueContent JSON.</description>
+      </file>
+      <file name="gemini.go">
+        <description>Adapter for the Google Gemini API. Makes a raw HTTP
+        POST to the generateContent endpoint. Authenticates with the API
+        key as a query parameter. Uses the model specified in LLM_MODEL.
+        Parses the first candidate's text part and unmarshals as
+        IssueContent JSON.</description>
+      </file>
+    </package>
+
+  </internal_packages>
+
+  <!-- ============================================================ -->
+  <!--  SERVICES                                                     -->
+  <!-- ============================================================ -->
+  <services>
+
+    <service name="webhook" path="services/webhook">
+
+      <file name="main.go">
+        <description>Entrypoint. Calls config.Load(), initialises the
+        Pub/Sub client, registers the HTTP route, and starts the server on
+        the port defined by the PORT env var (defaulting to 8080, as
+        required by Cloud Run).</description>
+      </file>
+
+      <file name="handler.go">
+        <description>HTTP handler for POST /slack/events.</description>
+        <behaviour>
+          <step>Read the full request body into a byte slice before any
+          other processing. The raw bytes are needed for signature
+          verification and must not be consumed by a JSON decoder
+          first.</step>
+          <step>Call slack.Verify with the raw body. Return 403 on
+          failure.</step>
+          <step>Unmarshal the body into a slack.EventCallback.</step>
+          <step>If Type is url_verification, respond with
+          {"challenge": "..."} and return immediately.</step>
+          <step>If Event.Type is app_mention and Event.ThreadTS is
+          non-empty, publish the raw event JSON bytes to the Pub/Sub
+          topic.</step>
+          <step>If Event.ThreadTS is empty, the mention is at the top
+          level of a channel, not inside a thread. Ignore silently or
+          optionally post a usage hint.</step>
+          <step>Return 200 OK with an empty body in all non-error
+          cases.</step>
+        </behaviour>
+        <error_handling>
+          Pub/Sub publish failure returns 500. Slack will retry delivery.
+          All other errors return appropriate 4xx codes and are logged.
+        </error_handling>
+      </file>
+
+      <file name="Dockerfile">
+        <description>Multi-stage build. The build context must include both
+        the services/webhook directory and the internal directory so the
+        replace directive in go.mod resolves correctly. The builder stage
+        uses golang:1.23-alpine. It copies internal/ to the path expected
+        by the replace directive, then copies services/webhook/, then runs
+        go build to produce a statically linked binary with CGO_ENABLED=0.
+        The runtime stage uses gcr.io/distroless/static and copies only
+        the binary. go.work is not copied or used inside the
+        container.</description>
+      </file>
+
+      <file name="main.go">
+        <description>Entrypoint. Calls config.Load(), initialises the
+        Slack client, GitHub client, and LLM provider. Registers the HTTP
+        route and starts the server on PORT.</description>
+      </file>
+
+      <file name="handler.go">
+        <description>HTTP handler for POST /pubsub/push. Orchestrates the
+        full processing pipeline.</description>
+        <behaviour>
+          <step>Decode the Pub/Sub push envelope. The message data field
+          is base64-encoded; decode it to recover the original Slack event
+          JSON.</step>
+          <step>Unmarshal the Slack event to extract Channel and
+          ThreadTS.</step>
+          <step>Call slack.Client.FetchThread to retrieve all thread
+          messages.</step>
+          <step>Format messages into a plain-text transcript: each line is
+          [timestamp] @username: message text, in chronological
+          order.</step>
+          <step>Call llm.Provider.Complete with the transcript as the user
+          prompt. Receive an IssueContent struct.</step>
+          <step>Call github.Client.CreateIssue with the title, body, and
+          labels from IssueContent. Receive the issue HTML URL.</step>
+          <step>Call slack.Client.PostReply with the issue URL to post a
+          confirmation back in the original thread.</step>
+          <step>Return 200 OK. Pub/Sub considers the message acknowledged.
+          Any non-200 response causes Pub/Sub to retry.</step>
+        </behaviour>
+        <error_handling>
+          If any pipeline step fails, log the error and return 500 so
+          Pub/Sub retries. Ensure that posting a duplicate GitHub issue
+          on retry is acceptable (idempotency is not enforced in v1).
+        </error_handling>
+      </file>
+
+      <file name="Dockerfile">
+        <description>Same multi-stage pattern as the webhook Dockerfile.
+        The build context includes both services/processor/ and internal/
+        so the replace directive resolves correctly. go.work is not copied
+        or used inside the container.</description>
+      </file>
+
+    </service>
+
+  </services>
+
+  <!-- ============================================================ -->
+  <!--  TERRAFORM INFRASTRUCTURE                                     -->
+  <!-- ============================================================ -->
+  <terraform>
+
+    <philosophy>All GCP resources are managed by Terraform. Secrets are
+    provisioned as Secret Manager resources; their values are supplied as
+    sensitive Terraform variables or populated out-of-band via the gcloud
+    CLI. No secret value ever appears in state in plaintext beyond what
+    Terraform itself manages.</philosophy>
+
+    <file name="main.tf">
+      <description>Declares the google provider, configures the GCP project
+      and region, and enables required APIs: run.googleapis.com,
+      pubsub.googleapis.com, secretmanager.googleapis.com,
+      artifactregistry.googleapis.com. Creates the Artifact Registry
+      repository for Docker images.</description>
+    </file>
+
+    <file name="variables.tf">
+      <description>Input variables consumed across all other files.</description>
+      <variables>
+        <var name="project_id" type="string" sensitive="false" />
+        <var name="region" type="string" sensitive="false"
+          default="europe-west1" />
+        <var name="github_repo" type="string" sensitive="false"
+          description="owner/repo format" />
+        <var name="llm_provider" type="string" sensitive="false"
+          description="anthropic, openai, or gemini" />
+        <var name="llm_model" type="string" sensitive="false" />
+        <var name="slack_bot_token" type="string" sensitive="true" />
+        <var name="slack_signing_secret" type="string" sensitive="true" />
+        <var name="github_token" type="string" sensitive="true" />
+        <var name="llm_api_key" type="string" sensitive="true" />
+      </variables>
+    </file>
+
+    <file name="secrets.tf">
+      <description>Creates google_secret_manager_secret and
+      google_secret_manager_secret_version resources for each sensitive
+      value: threadops-slack-bot-token, threadops-slack-signing-secret,
+      threadops-github-token, threadops-llm-api-key. Secret values are
+      sourced from the corresponding sensitive Terraform variables.</description>
+    </file>
+
+    <file name="pubsub.tf">
+      <description>Creates the threadops-events Pub/Sub topic. Creates a
+      push subscription that targets the processor service URL at
+      /pubsub/push. The push subscription uses an OIDC token from the
+      threadops service account so Cloud Run can verify the
+      caller.</description>
+    </file>
+
+    <file name="cloud_run.tf">
+      <description>Defines both Cloud Run v2 services.</description>
+      <service name="threadops-webhook">
+        <ingress>INGRESS_TRAFFIC_ALL (public)</ingress>
+        <env_vars>
+          <env name="SLACK_BOT_TOKEN" source="secret:threadops-slack-bot-token" />
+          <env name="SLACK_SIGNING_SECRET"
+            source="secret:threadops-slack-signing-secret" />
+          <env name="PUBSUB_TOPIC" source="terraform_var" />
+        </env_vars>
+      </service>
+      <service name="threadops-processor">
+        <ingress>INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER</ingress>
+        <env_vars>
+          <env name="SLACK_BOT_TOKEN" source="secret:threadops-slack-bot-token" />
+          <env name="GITHUB_TOKEN" source="secret:threadops-github-token" />
+          <env name="LLM_API_KEY" source="secret:threadops-llm-api-key" />
+          <env name="GITHUB_REPO" source="terraform_var" />
+          <env name="LLM_PROVIDER" source="terraform_var" />
+          <env name="LLM_MODEL" source="terraform_var" />
+        </env_vars>
+      </service>
+    </file>
+
+    <file name="iam.tf">
+      <description>Creates the threadops-sa service account and attaches
+      all required role bindings.</description>
+      <roles>
+        <role name="roles/pubsub.publisher"
+          grantee="threadops-sa"
+          reason="Webhook service publishes to threadops-events topic." />
+        <role name="roles/secretmanager.secretAccessor"
+          grantee="threadops-sa"
+          reason="Both services read secrets at startup." />
+        <role name="roles/run.invoker"
+          grantee="pubsub-push-sa"
+          reason="Pub/Sub push subscription invokes the processor service." />
+      </roles>
+      <cloud_run_iam>
+        <binding service="threadops-webhook" member="allUsers"
+          role="roles/run.invoker"
+          reason="Slack must be able to reach the webhook without auth." />
+        <binding service="threadops-processor" member="pubsub-push-sa"
+          role="roles/run.invoker"
+          reason="Only Pub/Sub push may invoke the processor." />
+      </cloud_run_iam>
+    </file>
+
+  </terraform>
+
+  <!-- ============================================================ -->
+  <!--  CONFIGURATION REFERENCE                                      -->
+  <!-- ============================================================ -->
+  <configuration>
+
+    <description>All runtime configuration is injected as environment
+    variables. Secrets are sourced from Secret Manager via Cloud Run secret
+    references. Non-secret values are set as plain env vars in
+    Terraform.</description>
+
+    <env_vars>
+      <var name="SLACK_BOT_TOKEN" secret="true"
+        description="xoxb- prefixed Slack bot token for API calls." />
+      <var name="SLACK_SIGNING_SECRET" secret="true"
+        description="Used to verify HMAC signatures on incoming Slack requests." />
+      <var name="GITHUB_TOKEN" secret="true"
+        description="Fine-grained PAT with issues:write scope on the target repo." />
+      <var name="LLM_API_KEY" secret="true"
+        description="API key for the configured LLM provider." />
+      <var name="GITHUB_REPO" secret="false"
+        description="Target repository in owner/repo format." />
+      <var name="LLM_PROVIDER" secret="false"
+        description="One of: anthropic, openai, gemini." />
+      <var name="LLM_MODEL" secret="false"
+        description="Model identifier string passed directly to the provider API." />
+      <var name="PUBSUB_TOPIC" secret="false"
+        description="Full Pub/Sub topic resource name used by the webhook service." />
+      <var name="PORT" secret="false"
+        description="HTTP port to listen on. Defaults to 8080. Set automatically by Cloud Run." />
+    </env_vars>
+
+  </configuration>
+
+  <!-- ============================================================ -->
+  <!--  BUILD AND DEPLOY SEQUENCE                                    -->
+  <!-- ============================================================ -->
+  <deployment>
+
+    <step order="1" name="terraform-init">
+      Run terraform init and terraform apply to provision all GCP
+      infrastructure. Cloud Run services initially point to a placeholder
+      image such as gcr.io/cloudrun/hello.
+    </step>
+    <step order="2" name="populate-secrets">
+      Secret Manager secret versions are created by Terraform using the
+      supplied sensitive variables. Verify via gcloud CLI that all four
+      secrets are present and accessible by the service account.
+    </step>
+    <step order="3" name="build-webhook">
+      Build the webhook Docker image, tag it with the Artifact Registry
+      path, and push it.
+    </step>
+    <step order="4" name="build-processor">
+      Build the processor Docker image, tag it, and push it.
+    </step>
+    <step order="5" name="update-cloud-run">
+      Run terraform apply again to update both Cloud Run services to point
+      to the real images just pushed.
+    </step>
+    <step order="6" name="slack-app-setup">
+      Create the Slack App in the Slack developer portal. Enable the Events
+      API. Set the Request URL to the webhook Cloud Run service URL. Subscribe
+      to the app_mention event under Bot Events. Install the app to the
+      workspace and invite it to the target channel.
+    </step>
+    <step order="7" name="end-to-end-test">
+      Mention @ThreadOps inside an existing Slack thread. Verify that a
+      GitHub issue is created in the target repository and that the bot
+      replies in the thread with the issue URL.
+    </step>
+
+  </deployment>
+
+  <!-- ============================================================ -->
+  <!--  LOCAL DEVELOPMENT                                            -->
+  <!-- ============================================================ -->
+  <local_development>
+
+    <overview>The full system can be run locally using Docker Compose. The
+    Pub/Sub emulator replaces the real GCP topic. Both services run as
+    containers on a shared Docker network so they can address each other by
+    service name. Secret Manager is not used locally; all secrets and config
+    are loaded from a .env file that Docker Compose injects as environment
+    variables. The only external dependency that cannot be emulated is Slack
+    itself, which requires a public URL to deliver events — handled with
+    ngrok.</overview>
+
+    <challenges>
+      <challenge name="pubsub-emulator-push">
+        In production, Pub/Sub pushes to the processor's Cloud Run URL. The
+        emulator also supports push subscriptions, but the push target must
+        be configured against the emulator's REST API after it starts, not
+        via Terraform. A setup script handles this by calling the emulator
+        REST endpoint directly with curl before the services begin processing
+        traffic.
+      </challenge>
+      <challenge name="secret-manager">
+        GCP Secret Manager is not available locally. Since config.Load()
+        already reads from os.Getenv, no code changes are needed. A local
+        .env file is used instead, which Docker Compose loads for all
+        services.
+      </challenge>
+      <challenge name="slack-tunnel">
+        Slack's Events API requires a publicly reachable HTTPS URL to
+        deliver event payloads. The webhook service running on localhost is
+        not reachable by Slack without a tunnel. ngrok is used to expose
+        the local webhook port and produce a temporary public URL that is
+        registered in the Slack App's Event Subscriptions settings.
+      </challenge>
+      <challenge name="emulator-go-sdk">
+        The Go Pub/Sub client library automatically redirects all API calls
+        to the emulator when the PUBSUB_EMULATOR_HOST environment variable
+        is set. No code changes are required in the webhook or processor
+        services. The variable is set in docker-compose.yml for both
+        services.
+      </challenge>
+    </challenges>
+
+    <files>
+
+      <file name="docker-compose.yml" location="local/docker-compose.yml">
+        <description>Defines four services on a shared bridge network named
+        threadops-net.</description>
+        <services>
+          <service name="pubsub-emulator">
+            <image>gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators</image>
+            <command>gcloud beta emulators pubsub start
+            --project=local-project --host-port=0.0.0.0:8085</command>
+            <port>8085:8085</port>
+            <healthcheck>Poll http://pubsub-emulator:8085 until it responds.
+            Other services depend_on this with condition
+            service_healthy.</healthcheck>
+          </service>
+          <service name="pubsub-setup">
+            <image>curlimages/curl</image>
+            <description>Short-lived init container. Runs setup-pubsub.sh
+            after the emulator is healthy. Creates the threadops-events
+            topic and a push subscription targeting
+            http://processor:8080/pubsub/push. Exits when done. Both
+            the webhook and processor services depend_on this with
+            condition service_completed_successfully.</description>
+            <volumes>../local/setup-pubsub.sh mounted as entrypoint
+            script.</volumes>
+          </service>
+          <service name="webhook">
+            <build>../services/webhook (Dockerfile with build context
+            including ../internal)</build>
+            <port>8080:8080</port>
+            <env_file>local/.env</env_file>
+            <env>PUBSUB_EMULATOR_HOST=pubsub-emulator:8085</env>
+            <env>PUBSUB_TOPIC=projects/local-project/topics/threadops-events</env>
+            <env>PORT=8080</env>
+          </service>
+          <service name="processor">
+            <build>../services/processor (Dockerfile with build context
+            including ../internal)</build>
+            <port>8081:8080</port>
+            <env_file>local/.env</env_file>
+            <env>PUBSUB_EMULATOR_HOST=pubsub-emulator:8085</env>
+            <env>PORT=8080</env>
+          </service>
+        </services>
+      </file>
+
+      <file name=".env.example" location="local/.env.example">
+        <description>Template listing every environment variable the
+        services need locally. Committed to the repository. Developers copy
+        this to local/.env and fill in real values. The .env file itself is
+        gitignored.</description>
+        <variables>
+          SLACK_BOT_TOKEN=xoxb-your-token-here
+          SLACK_SIGNING_SECRET=your-signing-secret-here
+          GITHUB_TOKEN=your-github-pat-here
+          GITHUB_REPO=owner/repo
+          LLM_PROVIDER=anthropic
+          LLM_MODEL=claude-sonnet-4-20250514
+          LLM_API_KEY=your-llm-api-key-here
+        </variables>
+        <note>PUBSUB_EMULATOR_HOST, PUBSUB_TOPIC, and PORT are set directly
+        in docker-compose.yml and must not appear in .env to avoid
+        conflicting with the production values when the same .env is
+        accidentally reused.</note>
+      </file>
+
+      <file name="setup-pubsub.sh" location="local/setup-pubsub.sh">
+        <description>Shell script executed by the pubsub-setup init
+        container after the emulator passes its healthcheck. Uses curl to
+        call the Pub/Sub emulator REST API to create the topic and push
+        subscription. The emulator exposes the same REST API surface as
+        the real Pub/Sub service.</description>
+        <steps>
+          <step>PUT
+          http://pubsub-emulator:8085/v1/projects/local-project/topics/threadops-events
+          to create the topic.</step>
+          <step>PUT
+          http://pubsub-emulator:8085/v1/projects/local-project/subscriptions/threadops-processor-sub
+          with a JSON body setting topic to the topic resource name and
+          pushConfig.pushEndpoint to
+          http://processor:8080/pubsub/push.</step>
+        </steps>
+      </file>
+
+    </files>
+
+    <local_run_sequence>
+      <step order="1" name="copy-env">
+        Copy local/.env.example to local/.env and fill in all values.
+      </step>
+      <step order="2" name="start-compose">
+        Run docker compose -f local/docker-compose.yml up --build from the
+        repository root. This starts the emulator, runs the setup script,
+        then starts both services.
+      </step>
+      <step order="3" name="start-ngrok">
+        In a separate terminal run ngrok http 8080 to create a public tunnel
+        to the local webhook service. Copy the generated HTTPS URL.
+      </step>
+      <step order="4" name="configure-slack">
+        In the Slack App settings under Event Subscriptions, set the Request
+        URL to the ngrok HTTPS URL followed by /slack/events. Slack will
+        immediately send a url_verification challenge. The webhook service
+        must respond correctly for the URL to be verified. If the app was
+        previously configured with a Cloud Run URL, this replaces it
+        temporarily for local testing.
+      </step>
+      <step order="5" name="test">
+        Mention @ThreadOps in a Slack thread. Observe logs from both
+        services in the Docker Compose output. Verify the GitHub issue is
+        created and the bot replies in the thread.
+      </step>
+      <step order="6" name="teardown">
+        Run docker compose -f local/docker-compose.yml down to stop all
+        containers. The emulator state is ephemeral and does not persist
+        between runs. The pubsub-setup script re-creates the topic and
+        subscription on each docker compose up.
+      </step>
+    </local_run_sequence>
+
+    <notes>
+      <note>The ngrok URL changes every time ngrok restarts unless a paid
+      ngrok account with a static domain is used. The Slack App Request URL
+      must be updated each time.</note>
+      <note>The Pub/Sub emulator push subscription delivers messages by
+      making HTTP POST requests from within the Docker network to
+      http://processor:8080/pubsub/push. This is why the processor service
+      name in docker-compose.yml must match the hostname in the push
+      endpoint URL registered by setup-pubsub.sh.</note>
+      <note>PUBSUB_EMULATOR_HOST being set is all the Go Pub/Sub SDK needs
+      to redirect to the emulator. No application code changes are required
+      between local and production environments.</note>
+    </notes>
+
+  </local_development>
+
+  <!-- ============================================================ -->
+  <!--  END-TO-END TESTING                                           -->
+  <!-- ============================================================ -->
+  <e2e_testing>
+
+    <approach>Use Option C: a Go e2e test binary managed by testcontainers-go.
+    The test suite is fully self-contained — a single go test ./e2e/...
+    command starts the Pub/Sub emulator container, spins up fake HTTP servers
+    for the GitHub and Slack APIs using net/http/httptest, runs both services
+    as subprocesses, exercises the full pipeline, and tears everything down.
+    No pre-running infrastructure is required.</approach>
+
+    <required_code_change>
+      internal/github/client.go must accept a configurable base URL so the
+      test can redirect GitHub API calls to the fake server. NewClient gains
+      an optional baseURL parameter (or a functional option). When empty it
+      defaults to https://api.github.com. This is the only application code
+      change required to enable e2e testing.
+    </required_code_change>
+
+    <repository_additions>
+      <tree>
+        threadops/
+        └── e2e/
+            ├── go.mod              ← module: github.com/you/threadops/e2e
+            ├── go.sum
+            └── e2e_test.go         ← single test file containing all cases
+      </tree>
+      <note>The e2e module is separate from the service modules so that
+      testcontainers-go and other test-only dependencies never appear in
+      the service binaries. Add ./e2e to go.work so the workspace resolves
+      it locally.</note>
+    </repository_additions>
+
+    <fake_servers>
+
+      <server name="fake-github">
+        <implementation>net/http/httptest.NewServer</implementation>
+        <description>Handles POST /repos/{owner}/{repo}/issues. Validates
+        that the Authorization header is present. Unmarshals the request
+        body and sends it on a Go channel so the test can assert its
+        contents. Returns a minimal JSON response containing a fake
+        html_url. Runs for the lifetime of the test.</description>
+        <assertion_channel>
+          chan GitHubIssueRequest — buffered with capacity 1. The test
+          receives from this channel with a timeout (e.g. 10 seconds) to
+          avoid hanging indefinitely on failure.
+        </assertion_channel>
+      </server>
+
+      <server name="fake-slack-api">
+        <implementation>net/http/httptest.NewServer</implementation>
+        <description>Handles two Slack Web API endpoints used by the
+        processor: POST /api/conversations.replies returns a canned thread
+        transcript with two or three messages. POST /api/chat.postMessage
+        records the posted text on a channel so the test can assert the
+        issue URL was sent back to Slack. Returns ok: true for both
+        endpoints.</description>
+        <assertion_channel>
+          chan SlackReply — buffered with capacity 1. The test receives
+          from this channel with a timeout after asserting the GitHub
+          issue.
+        </assertion_channel>
+      </server>
+
+    </fake_servers>
+
+    <test_infrastructure_setup>
+      <step order="1" name="start-emulator">
+        Use testcontainers-go to start
+        gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators running
+        gcloud beta emulators pubsub start --project=test-project
+        --host-port=0.0.0.0:8085. Wait for the container to be ready by
+        polling the emulator HTTP endpoint.
+      </step>
+      <step order="2" name="create-topic-and-subscription">
+        Use the Pub/Sub emulator REST API via net/http to create the
+        threadops-events topic and a push subscription pointing to the
+        processor subprocess address at /pubsub/push. The processor address
+        is known because it is assigned a random free port before the
+        subprocess starts.
+      </step>
+      <step order="3" name="start-fake-servers">
+        Start the fake GitHub and fake Slack API httptest servers. Capture
+        their URLs.
+      </step>
+      <step order="4" name="start-processor">
+        Start services/processor as an exec.Cmd subprocess. Inject env vars:
+        PUBSUB_EMULATOR_HOST pointing to the emulator, SLACK_BOT_TOKEN set
+        to any non-empty test value, GITHUB_TOKEN set to any non-empty test
+        value, GITHUB_REPO set to testowner/testrepo, GITHUB_BASE_URL set
+        to the fake GitHub server URL, SLACK_API_URL set to the fake Slack
+        API server URL, LLM_PROVIDER and LLM_API_KEY pointing to a real or
+        stub LLM (see LLM note below), and PORT set to the pre-assigned
+        random port. Wait for the processor to be ready by polling its
+        health or making a harmless HTTP request.
+      </step>
+      <step order="5" name="start-webhook">
+        Start services/webhook as an exec.Cmd subprocess. Inject env vars:
+        PUBSUB_EMULATOR_HOST, SLACK_SIGNING_SECRET set to a known test
+        secret, PUBSUB_TOPIC set to the full test topic resource name, and
+        PORT set to another random free port.
+      </step>
+    </test_infrastructure_setup>
+
+    <test_cases>
+
+      <test name="TestFullPipeline">
+        <description>Happy path. A valid Slack app_mention event in a thread
+        flows through the full pipeline and produces a GitHub issue and a
+        Slack reply.</description>
+        <steps>
+          <step>Construct a Slack EventCallback JSON payload with type
+          app_mention, a non-empty thread_ts, and a channel value matching
+          what the fake Slack API will recognise.</step>
+          <step>Compute the correct X-Slack-Signature HMAC using the test
+          signing secret and the current timestamp.</step>
+          <step>POST the payload to the webhook service at
+          /slack/events with the signature headers.</step>
+          <step>Assert the webhook returns 200 OK immediately.</step>
+          <step>Receive from the fake GitHub assertion channel with a
+          10-second timeout. Assert the issue title is non-empty, the body
+          contains content derived from the canned thread transcript, and
+          labels is a non-nil slice.</step>
+          <step>Receive from the fake Slack reply channel with a 5-second
+          timeout. Assert the posted text contains the fake issue URL
+          returned by the fake GitHub server.</step>
+        </steps>
+      </test>
+
+      <test name="TestInvalidSignatureRejected">
+        <description>Webhook rejects requests with a bad signature.</description>
+        <steps>
+          <step>POST a valid event body to /slack/events with a deliberately
+          wrong X-Slack-Signature value.</step>
+          <step>Assert the webhook returns 403.</step>
+          <step>Assert the fake GitHub channel receives nothing within
+          1 second, confirming no processing occurred.</step>
+        </steps>
+      </test>
+
+      <test name="TestURLVerificationChallenge">
+        <description>Webhook responds correctly to Slack's one-time URL
+        verification handshake.</description>
+        <steps>
+          <step>POST a url_verification payload with a known challenge
+          string to /slack/events with a valid signature.</step>
+          <step>Assert the response body contains the same challenge
+          value.</step>
+          <step>Assert the response status is 200.</step>
+        </steps>
+      </test>
+
+      <test name="TestMentionOutsideThreadIgnored">
+        <description>A top-level channel mention with no thread_ts is
+        silently ignored and does not produce a GitHub issue.</description>
+        <steps>
+          <step>POST an app_mention event with an empty thread_ts and a
+          valid signature.</step>
+          <step>Assert the webhook returns 200.</step>
+          <step>Assert the fake GitHub channel receives nothing within
+          2 seconds.</step>
+        </steps>
+      </test>
+
+    </test_cases>
+
+    <llm_handling>
+      <description>The LLM call is the only step in the pipeline that cannot
+      be easily faked without either hitting a real API or adding an
+      abstraction seam. Two approaches are viable.</description>
+      <option name="real-llm">
+        Use a real LLM API key in the test environment. The test injects
+        LLM_PROVIDER and LLM_API_KEY as env vars for the processor subprocess.
+        The e2e test then only asserts structural properties of the output
+        (title is non-empty, body is non-empty, labels is a slice) rather
+        than exact content. This is the simplest approach and tests the
+        full stack including the LLM adapter code.
+      </option>
+      <option name="stub-llm-server">
+        Add a STUB_LLM_URL env var to the processor. When set, the LLM
+        client posts to that URL instead of the real provider. The test
+        runs a third httptest server that returns a hardcoded IssueContent
+        JSON response. This eliminates cost and flakiness from the LLM
+        call and allows exact content assertions. Requires a small
+        additional seam in internal/llm/provider.go.
+      </option>
+      <recommendation>Use the stub LLM server for the e2e suite to keep
+      tests fast, free, and deterministic. Use a real LLM in a separate
+      manual smoke test or in CI on a scheduled basis only.</recommendation>
+    </llm_handling>
+
+    <synchronisation>
+      <description>All asynchronous assertions use channel receives with
+      timeouts rather than time.Sleep. This pattern is deterministic: the
+      test proceeds as soon as the expected event arrives and fails fast
+      with a clear timeout error if it does not.</description>
+      <pattern>
+        select {
+          case req := &lt;-githubIssueCh:
+            // assert req fields
+          case &lt;-time.After(10 * time.Second):
+            t.Fatal("timed out waiting for GitHub issue creation")
+        }
+      </pattern>
+    </synchronisation>
+
+    <new_dependency>
+      <package name="github.com/testcontainers/testcontainers-go"
+        module="e2e"
+        reason="Manages the Pub/Sub emulator container lifecycle inside
+        the test. Scoped to the e2e module only — never appears in service
+        binaries." />
+    </new_dependency>
+
+    <run_command>
+      go test ./e2e/... -v -timeout 120s
+
+      Requires Docker to be available in the environment. The emulator
+      image is pulled on first run. Subsequent runs use the cached image.
+    </run_command>
+
+  </e2e_testing>
+
+  <!-- ============================================================ -->
+  <!--  OUT OF SCOPE FOR V1                                          -->
+  <!-- ============================================================ -->
+  <out_of_scope>
+    <item>Duplicate event deduplication. Slack occasionally delivers the
+    same event twice. Not handled in v1.</item>
+    <item>Dead-letter topic for failed Pub/Sub messages.</item>
+    <item>Cloud Monitoring alerting or dashboards.</item>
+    <item>Multi-repo routing such as directing issues to different repos
+    based on which Slack channel the mention occurs in.</item>
+    <item>CI/CD pipeline via GitHub Actions.</item>
+  </out_of_scope>
+
+</spec>
