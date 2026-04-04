@@ -63,6 +63,14 @@ func TestFullPipeline(t *testing.T) {
 		t.Fatalf("webhook returned %d: %s", resp.StatusCode, respBody)
 	}
 
+	// Assert LLM call received.
+	select {
+	case <-env.LLMCallCh:
+		// Success.
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for LLM call")
+	}
+
 	// Assert GitHub issue created.
 	select {
 	case issue := <-env.GitHubIssueCh:

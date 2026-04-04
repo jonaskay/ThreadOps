@@ -15,22 +15,24 @@ import (
 )
 
 const (
-	pubsubEmulatorHost = "localhost:8085"
-	pubsubProject      = "test-project"
-	pubsubTopic        = "threadops-events"
-	testSlackToken     = "test-slack-token"
-	testGitHubToken    = "test-github-token"
-	testGitHubRepo     = "testowner/testrepo"
+	pubsubEmulatorHost  = "localhost:8085"
+	pubsubProject       = "test-project"
+	pubsubTopic         = "threadops-events"
+	testAnthropicAPIKey = "test-anthropic-api-key"
+	testSlackToken      = "test-slack-token"
+	testGitHubToken     = "test-github-token"
+	testGitHubRepo      = "testowner/testrepo"
 )
 
 type env struct {
 	WebhookPort   int
 	ProcessorPort int
+	LLMCallCh     chan AnthropicMessageRequest
 	GitHubIssueCh chan GitHubIssueRequest
 	SlackReplyCh  chan SlackReply
+	LLMServer     *httptest.Server
 	GitHubServer  *httptest.Server
 	SlackServer   *httptest.Server
-	LLMServer     *httptest.Server
 }
 
 func newEnv(t *testing.T) *env {
@@ -41,6 +43,10 @@ func newEnv(t *testing.T) *env {
 	processorPort := freePort(t)
 	webhookPort := freePort(t)
 
+	llmCallCh := make(chan AnthropicMessageRequest, 1)
+	llmServer := FakeAnthropicServer(t, llmCallCh)
+	t.Cleanup(llmServer.Close)
+
 	githubIssueCh := make(chan GitHubIssueRequest, 1)
 	githubServer := FakeGitHubServer(t, githubIssueCh)
 	t.Cleanup(githubServer.Close)
@@ -48,9 +54,6 @@ func newEnv(t *testing.T) *env {
 	slackReplyCh := make(chan SlackReply, 1)
 	slackServer := FakeSlackServer(t, slackReplyCh)
 	t.Cleanup(slackServer.Close)
-
-	llmServer := StubAnthropicServer(t)
-	t.Cleanup(llmServer.Close)
 
 	createPubSubTopicAndSubscription(t, processorPort)
 
@@ -66,11 +69,12 @@ func newEnv(t *testing.T) *env {
 	return &env{
 		WebhookPort:   webhookPort,
 		ProcessorPort: processorPort,
+		LLMCallCh:     llmCallCh,
 		GitHubIssueCh: githubIssueCh,
 		SlackReplyCh:  slackReplyCh,
+		LLMServer:     llmServer,
 		GitHubServer:  githubServer,
 		SlackServer:   slackServer,
-		LLMServer:     llmServer,
 	}
 }
 
