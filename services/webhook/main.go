@@ -2,13 +2,18 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
 
-	internal "github.com/jonaskay/threadops/internal/slack"
+	"github.com/jonaskay/threadops/internal/slack"
 )
+
+type VerifierFunc func(string, http.Header, []byte) error
+
+func (f VerifierFunc) Verify(signingSecret string, header http.Header, body []byte) error {
+	return f(signingSecret, header, body)
+}
 
 func main() {
 	port := os.Getenv("PORT")
@@ -21,20 +26,10 @@ func main() {
 		log.Fatal("SLACK_SIGNING_SECRET is not set")
 	}
 
-	http.HandleFunc("/slack/events", func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			log.Printf("read body: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		if err := internal.Verify(signingSecret, r.Header, body); err != nil {
-			log.Printf("verify: %v", err)
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	})
+	var verifier Verifier = VerifierFunc(slack.Verify)
+	var pub Publisher
+
+	http.HandleFunc("/slack/events", handleSlackEvent(signingSecret, verifier, pub))
 
 	fmt.Printf("webhook listening on :%s\n", port)
 	http.ListenAndServe(":"+port, nil)
