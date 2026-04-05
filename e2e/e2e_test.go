@@ -67,7 +67,7 @@ func TestFullPipeline(t *testing.T) {
 	select {
 	case <-env.LLMCallCh:
 		// Success.
-	case <-time.After(10 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for LLM call")
 	}
 
@@ -83,7 +83,7 @@ func TestFullPipeline(t *testing.T) {
 		if len(issue.Labels) == 0 {
 			t.Error("GitHub issue has no labels")
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for GitHub issue creation")
 	}
 
