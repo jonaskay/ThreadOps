@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 
+	"github.com/jonaskay/threadops/internal/pubsub"
 	"github.com/jonaskay/threadops/internal/slack"
 )
 
@@ -25,9 +27,17 @@ func main() {
 	if signingSecret == "" {
 		log.Fatal("SLACK_SIGNING_SECRET is not set")
 	}
+	projectID := os.Getenv("PROJECT_ID")
+	if projectID == "" {
+		log.Fatal("PROJECT_ID is not set")
+	}
+	topicID := os.Getenv("PUBSUB_TOPIC")
+	if topicID == "" {
+		log.Fatal("PUBSUB_TOPIC is not set")
+	}
 
-	var verifier Verifier = VerifierFunc(slack.Verify)
-	var pub Publisher
+	verifier := VerifierFunc(slack.Verify)
+	pub := pubsub.NewPublisher(context.Background(), projectID, topicID)
 
 	http.HandleFunc("/slack/events", handleSlackEvent(signingSecret, verifier, pub))
 

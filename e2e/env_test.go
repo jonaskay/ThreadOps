@@ -196,6 +196,7 @@ func startWebhook(t *testing.T, binDir string, port int) {
 	cmd := exec.Command(filepath.Join(binDir, "webhook"))
 	cmd.Env = []string{
 		fmt.Sprintf("PUBSUB_EMULATOR_HOST=%s", pubsubEmulatorHost),
+		fmt.Sprintf("PROJECT_ID=%s", pubsubProject),
 		fmt.Sprintf("SLACK_SIGNING_SECRET=%s", testSigningSecret),
 		fmt.Sprintf("SLACK_BOT_TOKEN=%s", testSlackToken),
 		fmt.Sprintf("PUBSUB_TOPIC=projects/%s/topics/%s", pubsubProject, pubsubTopic),

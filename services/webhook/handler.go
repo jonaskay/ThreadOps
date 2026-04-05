@@ -30,7 +30,7 @@ func handleSlackEvent(signingSecret string, v Verifier, pub Publisher) func(w ht
 			return
 		}
 
-		if err := pub.Publish(r.Context(), body); err != nil {
+		if err := pub.Publish(context.Background(), body); err != nil {
 			log.Printf("publish: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
