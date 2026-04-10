@@ -32,25 +32,29 @@ func TestHandleSlackEvent(t *testing.T) {
 		name      string
 		verifier  Verifier
 		publisher Publisher
-		want      int
+		wantCode  int
+		wantBody  []byte
 	}{
 		{
 			name:      "valid request",
 			verifier:  &fakeVerifier{err: nil},
 			publisher: &fakePublisher{err: nil},
-			want:      http.StatusOK,
+			wantCode:  http.StatusOK,
+			wantBody:  []byte("foo"),
 		},
 		{
 			name:      "verify fails",
 			verifier:  &fakeVerifier{err: errors.New("verify failed")},
 			publisher: &fakePublisher{err: nil},
-			want:      http.StatusForbidden,
+			wantCode:  http.StatusForbidden,
+			wantBody:  []byte(""),
 		},
 		{
 			name:      "publish fails",
 			verifier:  &fakeVerifier{err: nil},
 			publisher: &fakePublisher{err: errors.New("publish failed")},
-			want:      http.StatusInternalServerError,
+			wantCode:  http.StatusInternalServerError,
+			wantBody:  []byte("foo"),
 		},
 	}
 
@@ -63,11 +67,11 @@ func TestHandleSlackEvent(t *testing.T) {
 			rec := httptest.NewRecorder()
 			handleSlackEvent("test-secret", tt.verifier, tt.publisher)(rec, req)
 
-			if rec.Code != tt.want {
-				t.Errorf("got %d, want %d", rec.Code, tt.want)
+			if rec.Code != tt.wantCode {
+				t.Errorf("got %d, want %d", rec.Code, tt.wantCode)
 			}
 
-			if !bytes.Equal(tt.publisher.(*fakePublisher).got, body) {
+			if !bytes.Equal(tt.publisher.(*fakePublisher).got, tt.wantBody) {
 				t.Errorf("published %q, want %q", tt.publisher.(*fakePublisher).got, body)
 			}
 		})
