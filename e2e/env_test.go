@@ -29,6 +29,7 @@ type env struct {
 	ProcessorPort int
 	LLMCallCh     chan AnthropicMessageRequest
 	GitHubIssueCh chan GitHubIssueRequest
+	SlackThreadCh chan string
 	SlackReplyCh  chan SlackReply
 	LLMServer     *httptest.Server
 	GitHubServer  *httptest.Server
@@ -51,8 +52,9 @@ func newEnv(t *testing.T) *env {
 	githubServer := FakeGitHubServer(t, githubIssueCh)
 	t.Cleanup(githubServer.Close)
 
+	slackThreadCh := make(chan string, 1)
 	slackReplyCh := make(chan SlackReply, 1)
-	slackServer := FakeSlackServer(t, slackReplyCh)
+	slackServer := FakeSlackServer(t, slackThreadCh, slackReplyCh)
 	t.Cleanup(slackServer.Close)
 
 	createPubSubTopicAndSubscription(t, processorPort)
@@ -111,8 +113,20 @@ func createPubSubTopicAndSubscription(t *testing.T, processorPort int) {
 		t.Fatalf("create topic: status %d", resp.StatusCode)
 	}
 
-	// Create push subscription.
+	// Delete any pre-existing subscription so the push endpoint reflects this run's processor port.
+	// The emulator persists subscriptions across test runs, and freePort returns a different port each time.
 	subURL := fmt.Sprintf("%s/v1/projects/%s/subscriptions/threadops-push", emulatorURL, pubsubProject)
+	delReq, _ := http.NewRequest("DELETE", subURL, nil)
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatalf("delete subscription: %v", err)
+	}
+	delResp.Body.Close()
+	if delResp.StatusCode != http.StatusOK && delResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("delete subscription: status %d", delResp.StatusCode)
+	}
+
+	// Create push subscription.
 	subBody, _ := json.Marshal(map[string]interface{}{
 		"topic": fmt.Sprintf("projects/%s/topics/%s", pubsubProject, pubsubTopic),
 		"pushConfig": map[string]string{
