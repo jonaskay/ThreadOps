@@ -3,169 +3,191 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
 type fakeSlackClient struct {
-	fetchThreadGot []byte
+	fetchThreadGot string
 	fetchThreadErr error
-	postReplyGot   []byte
+	postReplyGot   string
 	postReplyErr   error
 }
 
-func (f *fakeSlackClient) FetchThread() error {
-	f.fetchThreadGot = []byte("fetch thread")
+func (f *fakeSlackClient) FetchThread(ts string) (SlackThread, error) {
+	f.fetchThreadGot = ts
 
-	return f.fetchThreadErr
+	return SlackThread{
+		Messages: []SlackMessage{
+			{User: "U1001", Text: "We need to track this bug"},
+			{User: "U1002", Text: "Agreed, it keeps happening in prod"},
+			{User: "U1003", Text: "<@U0001> create an issue from this thread"},
+		},
+	}, f.fetchThreadErr
 }
-func (f *fakeSlackClient) PostReply() error {
-	f.postReplyGot = []byte("post reply")
+func (f *fakeSlackClient) PostReply(url string) error {
+	f.postReplyGot = url
 
 	return f.postReplyErr
 }
 
-type fakeTranscriptParser struct {
-	got []byte
-	err error
-}
-
-func (f *fakeTranscriptParser) Parse() error {
-	f.got = []byte("parse")
-
-	return f.err
-}
-
 type fakeLLMProvider struct {
-	got []byte
+	got SlackThread
 	err error
 }
 
-func (f *fakeLLMProvider) Query() error {
-	f.got = []byte("query")
-	return f.err
+func (f *fakeLLMProvider) Query(transcript SlackThread) (Issue, error) {
+	f.got = transcript
+	return Issue{
+		Title:  "Bug report",
+		Body:   "Something broke",
+		Labels: []string{"bug"},
+	}, f.err
 }
 
 type fakeGitHubClient struct {
-	got []byte
+	got Issue
 	err error
 }
 
-func (f *fakeGitHubClient) CreateIssue() error {
-	f.got = []byte("create issue")
-	return f.err
+func (f *fakeGitHubClient) CreateIssue(issue Issue) (string, error) {
+	f.got = issue
+	return "https://github.com/testowner/testrepo/issues/42", f.err
 }
 
 func TestHandlePubsubPush(t *testing.T) {
 	test := []struct {
-		name             string
-		slackClient      SlackClient
-		transcriptParser TranscriptParser
-		llmProvider      LLMProvider
-		githubClient     GitHubClient
-		want             int
+		name         string
+		slackClient  SlackClient
+		llmProvider  LLMProvider
+		githubClient GitHubClient
+		wantCode     int
+		wantLLM      SlackThread
+		wantGitHub   Issue
+		wantIssueURL string
 	}{
 		{
-			name:             "valid request",
-			slackClient:      &fakeSlackClient{},
-			transcriptParser: &fakeTranscriptParser{},
-			llmProvider:      &fakeLLMProvider{},
-			githubClient:     &fakeGitHubClient{},
-			want:             http.StatusOK,
+			name:         "valid request",
+			slackClient:  &fakeSlackClient{},
+			llmProvider:  &fakeLLMProvider{},
+			githubClient: &fakeGitHubClient{},
+			wantCode:     http.StatusOK,
+			wantLLM: SlackThread{
+				Messages: []SlackMessage{
+					{User: "U1001", Text: "We need to track this bug"},
+					{User: "U1002", Text: "Agreed, it keeps happening in prod"},
+					{User: "U1003", Text: "<@U0001> create an issue from this thread"},
+				},
+			},
+			wantGitHub: Issue{
+				Title:  "Bug report",
+				Body:   "Something broke",
+				Labels: []string{"bug"},
+			},
+			wantIssueURL: "https://github.com/testowner/testrepo/issues/42",
 		},
 		{
-			name:             "fetch conversation fails",
-			slackClient:      &fakeSlackClient{},
-			transcriptParser: &fakeTranscriptParser{},
-			llmProvider:      &fakeLLMProvider{},
-			githubClient:     &fakeGitHubClient{},
-			want:             http.StatusInternalServerError,
+			name:         "fetch conversation fails",
+			slackClient:  &fakeSlackClient{fetchThreadErr: errors.New("fetch thread failed")},
+			llmProvider:  &fakeLLMProvider{},
+			githubClient: &fakeGitHubClient{},
+			wantCode:     http.StatusInternalServerError,
+			wantLLM:      SlackThread{},
+			wantGitHub:   Issue{},
+			wantIssueURL: "",
 		},
 		{
-			name:             "conversation parsing fails",
-			slackClient:      &fakeSlackClient{},
-			transcriptParser: &fakeTranscriptParser{},
-			llmProvider:      &fakeLLMProvider{},
-			githubClient:     &fakeGitHubClient{},
-			want:             http.StatusInternalServerError,
+			name:         "llm call fails",
+			slackClient:  &fakeSlackClient{},
+			llmProvider:  &fakeLLMProvider{err: errors.New("llm query failed")},
+			githubClient: &fakeGitHubClient{},
+			wantCode:     http.StatusInternalServerError,
+			wantLLM: SlackThread{
+				Messages: []SlackMessage{
+					{User: "U1001", Text: "We need to track this bug"},
+					{User: "U1002", Text: "Agreed, it keeps happening in prod"},
+					{User: "U1003", Text: "<@U0001> create an issue from this thread"},
+				},
+			},
+			wantGitHub:   Issue{},
+			wantIssueURL: "",
 		},
 		{
-			name:             "llm call fails",
-			slackClient:      &fakeSlackClient{},
-			transcriptParser: &fakeTranscriptParser{},
-			llmProvider:      &fakeLLMProvider{},
-			githubClient:     &fakeGitHubClient{},
-			want:             http.StatusInternalServerError,
+			name:         "issue creation fails",
+			slackClient:  &fakeSlackClient{},
+			llmProvider:  &fakeLLMProvider{},
+			githubClient: &fakeGitHubClient{err: errors.New("create issue failed")},
+			wantCode:     http.StatusInternalServerError,
+			wantLLM: SlackThread{
+				Messages: []SlackMessage{
+					{User: "U1001", Text: "We need to track this bug"},
+					{User: "U1002", Text: "Agreed, it keeps happening in prod"},
+					{User: "U1003", Text: "<@U0001> create an issue from this thread"},
+				},
+			},
+			wantGitHub: Issue{
+				Title:  "Bug report",
+				Body:   "Something broke",
+				Labels: []string{"bug"},
+			},
+			wantIssueURL: "",
 		},
 		{
-			name:             "issue creation fails",
-			slackClient:      &fakeSlackClient{},
-			transcriptParser: &fakeTranscriptParser{},
-			llmProvider:      &fakeLLMProvider{},
-			githubClient:     &fakeGitHubClient{},
-			want:             http.StatusInternalServerError,
-		},
-		{
-			name:             "slack reply fails",
-			slackClient:      &fakeSlackClient{},
-			transcriptParser: &fakeTranscriptParser{},
-			llmProvider:      &fakeLLMProvider{},
-			githubClient:     &fakeGitHubClient{},
-			want:             http.StatusInternalServerError,
+			name:         "slack reply fails",
+			slackClient:  &fakeSlackClient{postReplyErr: errors.New("post reply failed")},
+			llmProvider:  &fakeLLMProvider{},
+			githubClient: &fakeGitHubClient{},
+			wantCode:     http.StatusInternalServerError,
+			wantLLM: SlackThread{
+				Messages: []SlackMessage{
+					{User: "U1001", Text: "We need to track this bug"},
+					{User: "U1002", Text: "Agreed, it keeps happening in prod"},
+					{User: "U1003", Text: "<@U0001> create an issue from this thread"},
+				},
+			},
+			wantGitHub: Issue{
+				Title:  "Bug report",
+				Body:   "Something broke",
+				Labels: []string{"bug"},
+			},
+			wantIssueURL: "https://github.com/testowner/testrepo/issues/42",
 		},
 	}
 
 	for _, tt := range test {
 		t.Run(tt.name, func(t *testing.T) {
-			threadTs := "1234567890"
-			messages, _ := json.Marshal(map[string]interface{}{
-				"messages": []map[string]interface{}{
-					{"user": "U1001", "text": "We need to track this bug", "ts": "1234567890.000001"},
-					{"user": "U1002", "text": "Agreed, it keeps happening in prod", "ts": "1234567890.000002"},
-					{"user": "U1003", "text": "<@U0001> create an issue from this thread", "ts": "1234567890.123456"},
+			threadTs := "1234567890.123456"
+			envelope, _ := json.Marshal(PubSubEnvelope{
+				Message: PubSubMessage{
+					Data: []byte(`{"ts": "` + threadTs + `"}`),
 				},
 			})
-			transcript, _ := json.Marshal(map[string]interface{}{
-				"messages": []map[string]interface{}{
-					{"user": "U1001", "text": "We need to track this bug", "ts": "1234567890.000001"},
-					{"user": "U1002", "text": "Agreed, it keeps happening in prod", "ts": "1234567890.000002"},
-					{"user": "U1003", "text": "<@U0001> create an issue from this thread", "ts": "1234567890.123456"},
-				},
-			})
-			issue, _ := json.Marshal(map[string]interface{}{
-				"title":  "Bug report",
-				"body":   "Something broke",
-				"labels": []string{"bug"},
-			})
-			issueURL := "https://github.com/testowner/testrepo/issues/42"
 
-			req := httptest.NewRequest("POST", "/pubsub/push", bytes.NewReader(messages))
+			req := httptest.NewRequest("POST", "/pubsub/push", bytes.NewReader(envelope))
 			rec := httptest.NewRecorder()
-			handlePubsubPush(tt.slackClient, tt.transcriptParser, tt.llmProvider, tt.githubClient, threadTs)(rec, req)
+			handlePubsubPush(tt.slackClient, tt.llmProvider, tt.githubClient)(rec, req)
 
-			if rec.Code != tt.want {
-				t.Errorf("got %d, want %d", rec.Code, tt.want)
+			if rec.Code != tt.wantCode {
+				t.Errorf("got %d, want %d", rec.Code, tt.wantCode)
 			}
 
-			if !bytes.Equal(tt.slackClient.(*fakeSlackClient).fetchThreadGot, []byte(threadTs)) {
+			if tt.slackClient.(*fakeSlackClient).fetchThreadGot != threadTs {
 				t.Errorf("slack got %q, want %q", tt.slackClient.(*fakeSlackClient).fetchThreadGot, threadTs)
 			}
 
-			if !bytes.Equal(tt.transcriptParser.(*fakeTranscriptParser).got, messages) {
-				t.Errorf("parser got %q, want %q", tt.transcriptParser.(*fakeTranscriptParser).got, messages)
+			if !reflect.DeepEqual(tt.llmProvider.(*fakeLLMProvider).got, tt.wantLLM) {
+				t.Errorf("llm got %v, want %v", tt.llmProvider.(*fakeLLMProvider).got, tt.wantLLM)
 			}
 
-			if !bytes.Equal(tt.llmProvider.(*fakeLLMProvider).got, transcript) {
-				t.Errorf("llm got %q, want %q", tt.llmProvider.(*fakeLLMProvider).got, transcript)
+			if !reflect.DeepEqual(tt.githubClient.(*fakeGitHubClient).got, tt.wantGitHub) {
+				t.Errorf("github got %v, want %v", tt.githubClient.(*fakeGitHubClient).got, tt.wantGitHub)
 			}
 
-			if !bytes.Equal(tt.githubClient.(*fakeGitHubClient).got, issue) {
-				t.Errorf("github got %q, want %q", tt.githubClient.(*fakeGitHubClient).got, issue)
-			}
-
-			if !bytes.Equal(tt.slackClient.(*fakeSlackClient).postReplyGot, []byte(issueURL)) {
-				t.Errorf("slack got %q, want %q", tt.slackClient.(*fakeSlackClient).postReplyGot, issueURL)
+			if tt.slackClient.(*fakeSlackClient).postReplyGot != tt.wantIssueURL {
+				t.Errorf("slack got %q, want %q", tt.slackClient.(*fakeSlackClient).postReplyGot, tt.wantIssueURL)
 			}
 		})
 	}
