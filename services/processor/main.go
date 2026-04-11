@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 )
@@ -12,7 +13,16 @@ func main() {
 		port = "8081"
 	}
 
-	var slackClient SlackClient
+	slackBotToken := os.Getenv("SLACK_BOT_TOKEN")
+	if slackBotToken == "" {
+		log.Fatal("SLACK_BOT_TOKEN is not set")
+	}
+	slackAPIURL := os.Getenv("SLACK_API_URL")
+	if slackAPIURL == "" {
+		slackAPIURL = "https://slack.com"
+	}
+
+	var slackClient SlackClient = newSlackHTTPClient(slackAPIURL, slackBotToken)
 	var llmProvider LLMProvider
 	var githubClient GitHubClient
 
