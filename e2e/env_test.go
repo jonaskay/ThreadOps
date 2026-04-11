@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -17,7 +19,6 @@ import (
 const (
 	pubsubEmulatorHost  = "localhost:8085"
 	pubsubProject       = "test-project"
-	pubsubTopic         = "threadops-events"
 	testAnthropicAPIKey = "test-anthropic-api-key"
 	testSlackToken      = "test-slack-token"
 	testGitHubToken     = "test-github-token"
@@ -57,7 +58,7 @@ func newEnv(t *testing.T) *env {
 	slackServer := FakeSlackServer(t, slackThreadCh, slackReplyCh)
 	t.Cleanup(slackServer.Close)
 
-	createPubSubTopicAndSubscription(t, processorPort)
+	topic := createPubSubTopicAndSubscription(t, processorPort)
 
 	binDir := t.TempDir()
 	repoRoot := repoRootDir(t)
@@ -66,7 +67,7 @@ func newEnv(t *testing.T) *env {
 	buildService(t, repoRoot, binDir, "webhook")
 
 	startProcessor(t, binDir, processorPort, slackServer.URL, githubServer.URL, llmServer.URL)
-	startWebhook(t, binDir, webhookPort)
+	startWebhook(t, binDir, webhookPort, topic)
 
 	return &env{
 		WebhookPort:   webhookPort,
@@ -96,39 +97,29 @@ func waitForPubSubEmulator(t *testing.T) {
 	t.Fatal("Pub/Sub emulator not running — run `docker compose up -d` first")
 }
 
-func createPubSubTopicAndSubscription(t *testing.T, processorPort int) {
+func createPubSubTopicAndSubscription(t *testing.T, processorPort int) string {
 	t.Helper()
 
-	emulatorURL := "http://" + pubsubEmulatorHost
+	suffix := randomSuffix(t)
+	topic := "threadops-events-" + suffix
+	subscription := "threadops-push-" + suffix
 
-	// Create topic.
-	topicURL := fmt.Sprintf("%s/v1/projects/%s/topics/%s", emulatorURL, pubsubProject, pubsubTopic)
+	emulatorURL := "http://" + pubsubEmulatorHost
+	topicURL := fmt.Sprintf("%s/v1/projects/%s/topics/%s", emulatorURL, pubsubProject, topic)
+	subURL := fmt.Sprintf("%s/v1/projects/%s/subscriptions/%s", emulatorURL, pubsubProject, subscription)
+
 	req, _ := http.NewRequest("PUT", topicURL, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("create topic: %v", err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusConflict {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("create topic: status %d", resp.StatusCode)
 	}
 
-	// Delete any pre-existing subscription so the push endpoint reflects this run's processor port.
-	// The emulator persists subscriptions across test runs, and freePort returns a different port each time.
-	subURL := fmt.Sprintf("%s/v1/projects/%s/subscriptions/threadops-push", emulatorURL, pubsubProject)
-	delReq, _ := http.NewRequest("DELETE", subURL, nil)
-	delResp, err := http.DefaultClient.Do(delReq)
-	if err != nil {
-		t.Fatalf("delete subscription: %v", err)
-	}
-	delResp.Body.Close()
-	if delResp.StatusCode != http.StatusOK && delResp.StatusCode != http.StatusNotFound {
-		t.Fatalf("delete subscription: status %d", delResp.StatusCode)
-	}
-
-	// Create push subscription.
-	subBody, _ := json.Marshal(map[string]interface{}{
-		"topic": fmt.Sprintf("projects/%s/topics/%s", pubsubProject, pubsubTopic),
+	subBody, _ := json.Marshal(map[string]any{
+		"topic": fmt.Sprintf("projects/%s/topics/%s", pubsubProject, topic),
 		"pushConfig": map[string]string{
 			"pushEndpoint": fmt.Sprintf("http://host.docker.internal:%d/pubsub/push", processorPort),
 		},
@@ -140,9 +131,35 @@ func createPubSubTopicAndSubscription(t *testing.T, processorPort int) {
 		t.Fatalf("create subscription: %v", err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusConflict {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("create subscription: status %d", resp.StatusCode)
 	}
+
+	t.Cleanup(func() {
+		deletePubSubResource(subURL)
+		deletePubSubResource(topicURL)
+	})
+
+	return topic
+}
+
+func deletePubSubResource(url string) {
+	req, _ := http.NewRequest("DELETE", url, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
+}
+
+func randomSuffix(t *testing.T) string {
+	t.Helper()
+
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatalf("random suffix: %v", err)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func repoRootDir(t *testing.T) string {
@@ -203,7 +220,7 @@ func startProcessor(t *testing.T, binDir string, port int, slackURL, githubURL, 
 	waitForService(t, port, "processor")
 }
 
-func startWebhook(t *testing.T, binDir string, port int) {
+func startWebhook(t *testing.T, binDir string, port int, topic string) {
 	t.Helper()
 
 	cmd := exec.Command(filepath.Join(binDir, "webhook"))
@@ -212,7 +229,7 @@ func startWebhook(t *testing.T, binDir string, port int) {
 		fmt.Sprintf("PROJECT_ID=%s", pubsubProject),
 		fmt.Sprintf("SLACK_SIGNING_SECRET=%s", testSigningSecret),
 		fmt.Sprintf("SLACK_BOT_TOKEN=%s", testSlackToken),
-		fmt.Sprintf("PUBSUB_TOPIC=projects/%s/topics/%s", pubsubProject, pubsubTopic),
+		fmt.Sprintf("PUBSUB_TOPIC=projects/%s/topics/%s", pubsubProject, topic),
 		fmt.Sprintf("PORT=%d", port),
 	}
 	cmd.Stdout = os.Stdout
