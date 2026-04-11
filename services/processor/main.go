@@ -35,9 +35,22 @@ func main() {
 		anthropicBaseURL = "https://api.anthropic.com"
 	}
 
+	githubToken := os.Getenv("GITHUB_TOKEN")
+	if githubToken == "" {
+		log.Fatal("GITHUB_TOKEN is not set")
+	}
+	githubRepo := os.Getenv("GITHUB_REPO")
+	if githubRepo == "" {
+		log.Fatal("GITHUB_REPO is not set")
+	}
+	githubBaseURL := os.Getenv("GITHUB_BASE_URL")
+	if githubBaseURL == "" {
+		githubBaseURL = "https://api.github.com"
+	}
+
 	var slackClient SlackClient = newSlackHTTPClient(slackAPIURL, slackBotToken)
 	var llmProvider LLMProvider = newAnthropicLLM(anthropicBaseURL, anthropicAPIKey, anthropicModel)
-	var githubClient GitHubClient
+	var githubClient GitHubClient = newGitHubHTTPClient(githubBaseURL, githubToken, githubRepo)
 
 	http.HandleFunc("/pubsub/push", handlePubsubPush(slackClient, llmProvider, githubClient))
 
