@@ -189,10 +189,9 @@ func startProcessor(t *testing.T, binDir string, port int, slackURL, githubURL, 
 		fmt.Sprintf("GITHUB_TOKEN=%s", testGitHubToken),
 		fmt.Sprintf("GITHUB_REPO=%s", testGitHubRepo),
 		fmt.Sprintf("GITHUB_BASE_URL=%s", githubURL),
-		"LLM_PROVIDER=stub",
-		"LLM_API_KEY=test-key",
-		fmt.Sprintf("STUB_LLM_URL=%s", llmURL),
-		"LLM_MODEL=test-model",
+		fmt.Sprintf("ANTHROPIC_API_KEY=%s", testAnthropicAPIKey),
+		fmt.Sprintf("ANTHROPIC_BASE_URL=%s", llmURL),
+		"ANTHROPIC_MODEL=test-model",
 		fmt.Sprintf("PORT=%d", port),
 	}
 	cmd.Stdout = os.Stdout

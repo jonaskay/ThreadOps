@@ -35,11 +35,15 @@ func FakeAnthropicServer(t *testing.T, ch chan<- AnthropicMessageRequest) *httpt
 			return
 		}
 
+		var req AnthropicMessageRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		ch <- req
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"content": []map[string]interface{}{
 				{
-					"text": "Test Issue",
+					"text": `{"title": "Test Issue", "body": "Generated from Slack thread", "labels": ["from-slack"]}`,
 					"type": "text",
 				},
 			},
