@@ -74,6 +74,7 @@ func newEnv(t *testing.T) *env {
 		ProcessorPort: processorPort,
 		LLMCallCh:     llmCallCh,
 		GitHubIssueCh: githubIssueCh,
+		SlackThreadCh: slackThreadCh,
 		SlackReplyCh:  slackReplyCh,
 		LLMServer:     llmServer,
 		GitHubServer:  githubServer,
