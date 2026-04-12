@@ -63,6 +63,22 @@ func TestFullPipeline(t *testing.T) {
 		t.Fatalf("webhook returned %d: %s", resp.StatusCode, respBody)
 	}
 
+	// Assert Slack thread fetched.
+	select {
+	case <-env.SlackThreadCh:
+		// Success.
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for Slack thread fetch")
+	}
+
+	// Assert LLM call received.
+	select {
+	case <-env.LLMCallCh:
+		// Success.
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for LLM call")
+	}
+
 	// Assert GitHub issue created.
 	select {
 	case issue := <-env.GitHubIssueCh:
@@ -85,7 +101,7 @@ func TestFullPipeline(t *testing.T) {
 		if !strings.Contains(reply.Text, fakeIssueURL) {
 			t.Errorf("Slack reply does not contain issue URL %q: got %q", fakeIssueURL, reply.Text)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for Slack reply")
 	}
 }

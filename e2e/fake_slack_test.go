@@ -13,13 +13,14 @@ type SlackReply struct {
 	Text     string `json:"text"`
 }
 
-func FakeSlackServer(t *testing.T, replyCh chan<- SlackReply) *httptest.Server {
+func FakeSlackServer(t *testing.T, threadCh chan<- string, replyCh chan<- SlackReply) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
 		switch r.URL.Path {
 		case "/api/conversations.replies":
+			threadCh <- "fetched"
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"ok": true,
 				"messages": []map[string]interface{}{

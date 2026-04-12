@@ -8,3 +8,7 @@ Prerequisites:
 
 - Go 1.26.1
 - Docker and Docker Compose (used to run the Pub/Sub emulator for e2e tests)
+
+To sync the dependencies, run
+
+    $ go work sync
