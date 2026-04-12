@@ -45,7 +45,24 @@ type PubSubMessage struct {
 }
 
 type SlackEvent struct {
-	TS string `json:"ts"`
+	Event SlackInnerEvent `json:"event"`
+	TS    string          `json:"ts"`
+	Type  string          `json:"type"`
+}
+
+type SlackInnerEvent struct {
+	TS       string `json:"ts"`
+	ThreadTS string `json:"thread_ts"`
+}
+
+func (e SlackEvent) threadTS() string {
+	if e.Event.ThreadTS != "" {
+		return e.Event.ThreadTS
+	}
+	if e.Event.TS != "" {
+		return e.Event.TS
+	}
+	return e.TS
 }
 
 func handlePubsubPush(slackClient SlackClient, llmProvider LLMProvider, githubClient GitHubClient) func(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +81,14 @@ func handlePubsubPush(slackClient SlackClient, llmProvider LLMProvider, githubCl
 			return
 		}
 
-		thread, err := slackClient.FetchThread(event.TS)
+		threadTS := event.threadTS()
+		if threadTS == "" {
+			log.Printf("missing thread timestamp in event")
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		thread, err := slackClient.FetchThread(threadTS)
 		if err != nil {
 			log.Printf("fetch thread: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)

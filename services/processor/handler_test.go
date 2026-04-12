@@ -162,7 +162,7 @@ func TestHandlePubsubPush(t *testing.T) {
 			threadTs := "1234567890.123456"
 			envelope, _ := json.Marshal(PubSubEnvelope{
 				Message: PubSubMessage{
-					Data: []byte(`{"ts": "` + threadTs + `"}`),
+					Data: []byte(`{"type":"event_callback","event":{"type":"app_mention","thread_ts":"` + threadTs + `","ts":"` + threadTs + `"}}`),
 				},
 			})
 
@@ -190,5 +190,29 @@ func TestHandlePubsubPush(t *testing.T) {
 				t.Errorf("slack got %q, want %q", tt.slackClient.(*fakeSlackClient).postReplyGot, tt.wantIssueURL)
 			}
 		})
+	}
+}
+
+func TestHandlePubsubPushMissingThreadTimestamp(t *testing.T) {
+	slackClient := &fakeSlackClient{}
+	llmProvider := &fakeLLMProvider{}
+	githubClient := &fakeGitHubClient{}
+
+	envelope, _ := json.Marshal(PubSubEnvelope{
+		Message: PubSubMessage{
+			Data: []byte(`{"type":"event_callback","event":{"type":"app_mention"}}`),
+		},
+	})
+
+	req := httptest.NewRequest("POST", "/pubsub/push", bytes.NewReader(envelope))
+	rec := httptest.NewRecorder()
+	handlePubsubPush(slackClient, llmProvider, githubClient)(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("got %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+
+	if slackClient.fetchThreadGot != "" {
+		t.Fatalf("slack got %q, want empty thread timestamp", slackClient.fetchThreadGot)
 	}
 }
