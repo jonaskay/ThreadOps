@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Check gofmt
+        run: |
+          unformatted="$(git ls-files '*.go' | xargs gofmt -l)"
+          if [ -n "${unformatted}" ]; then
+            echo "Unformatted Go files:"
+            echo "${unformatted}"
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: |
+          for dir in internal services/webhook services/processor e2e; do
+            (
+              cd "$dir"
+              go vet ./...
+            )
+          done
+
+  tidy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Check module tidiness
+        run: |
+          go work sync
+
+          for dir in internal services/webhook services/processor e2e; do
+            (
+              cd "$dir"
+              go mod tidy
+            )
+          done
+
+          if [ -n "$(git status --short --untracked-files=all -- \
+            go.work \
+            go.work.sum \
+            internal/go.mod internal/go.sum \
+            services/webhook/go.mod services/webhook/go.sum \
+            services/processor/go.mod services/processor/go.sum \
+            e2e/go.mod e2e/go.sum)" ]; then
+            echo "Dependency files are not tidy:"
+            git status --short --untracked-files=all -- \
+              go.work \
+              go.work.sum \
+              internal/go.mod internal/go.sum \
+              services/webhook/go.mod services/webhook/go.sum \
+              services/processor/go.mod services/processor/go.sum \
+              e2e/go.mod e2e/go.sum
+            git diff -- \
+              go.work \
+              go.work.sum \
+              internal/go.mod internal/go.sum \
+              services/webhook/go.mod services/webhook/go.sum \
+              services/processor/go.mod services/processor/go.sum \
+              e2e/go.mod e2e/go.sum
+            exit 1
+          fi
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run unit tests
+        run: |
+          for dir in internal services/webhook services/processor; do
+            (
+              cd "$dir"
+              go test ./...
+            )
+          done
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build services
+        run: go build ./services/processor ./services/webhook
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - tidy
+      - test
+      - build
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Start Pub/Sub emulator
+        working-directory: e2e
+        run: docker compose up -d
+
+      - name: Run e2e tests
+        working-directory: e2e
+        run: go test ./...
+
+      - name: Stop Pub/Sub emulator
+        if: always()
+        working-directory: e2e
+        run: docker compose down -v
