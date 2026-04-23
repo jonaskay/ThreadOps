@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package threadops.v1;
+
+option go_package = "github.com/jonaskay/threadops/internal/gen/threadops/v1;threadopsv1";
+
+message SlackEvent {
+  string token = 1;
+  string team_id = 2;
+  string api_app_id = 3;
+  InnerEvent event = 4;
+  string type = 5;
+  string event_id = 6;
+  int64 event_time = 7;
+  repeated Authorization authorizations = 8;
+}
+
+message InnerEvent {
+  string type = 1;
+  string user = 2;
+  string text = 3;
+  string ts = 4;
+  string channel = 5;
+  string event_ts = 6;
+}
+
+message Authorization {
+  string team_id = 1;
+  string user_id = 2;
+  bool is_bot = 3;
+  bool is_enterprise_install = 4;
+}

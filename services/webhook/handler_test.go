@@ -7,16 +7,36 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	threadopsv1 "github.com/jonaskay/threadops/internal/gen/threadops/v1"
+	"google.golang.org/protobuf/proto"
 )
 
+const validSlackPayload = `{
+	"token": "test-token",
+	"team_id": "T123",
+	"api_app_id": "A123",
+	"event": {
+		"type": "app_mention",
+		"user": "U123",
+		"text": "<@U456> create an issue",
+		"ts": "1234567890.000100",
+		"channel": "C123",
+		"event_ts": "1234567890.000100"
+	},
+	"type": "event_callback",
+	"event_id": "Ev123",
+	"event_time": 1234567890,
+	"authorizations": [{"team_id": "T123", "user_id": "U456", "is_bot": true, "is_enterprise_install": false}]
+}`
+
 type fakePublisher struct {
-	got []byte
+	got proto.Message
 	err error
 }
 
-func (f *fakePublisher) Publish(ctx context.Context, data []byte) error {
-	f.got = data
-
+func (f *fakePublisher) Publish(ctx context.Context, msg proto.Message) error {
+	f.got = msg
 	return f.err
 }
 
@@ -27,53 +47,76 @@ type fakeVerifier struct {
 func (f *fakeVerifier) Verify(signingSecret string, header http.Header, body []byte) error {
 	return f.err
 }
+
 func TestHandleSlackEvent(t *testing.T) {
-	test := []struct {
+	tests := []struct {
 		name      string
+		body      string
 		verifier  Verifier
 		publisher Publisher
 		wantCode  int
-		wantBody  []byte
 	}{
 		{
 			name:      "valid request",
+			body:      validSlackPayload,
 			verifier:  &fakeVerifier{err: nil},
 			publisher: &fakePublisher{err: nil},
 			wantCode:  http.StatusOK,
-			wantBody:  []byte("foo"),
 		},
 		{
 			name:      "verify fails",
+			body:      validSlackPayload,
 			verifier:  &fakeVerifier{err: errors.New("verify failed")},
 			publisher: &fakePublisher{err: nil},
 			wantCode:  http.StatusForbidden,
-			wantBody:  []byte(""),
 		},
 		{
 			name:      "publish fails",
+			body:      validSlackPayload,
 			verifier:  &fakeVerifier{err: nil},
 			publisher: &fakePublisher{err: errors.New("publish failed")},
 			wantCode:  http.StatusInternalServerError,
-			wantBody:  []byte("foo"),
+		},
+		{
+			name:      "malformed JSON",
+			body:      `{not valid json`,
+			verifier:  &fakeVerifier{err: nil},
+			publisher: &fakePublisher{err: nil},
+			wantCode:  http.StatusBadRequest,
 		},
 	}
 
-	for _, tt := range test {
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-
-			body := []byte("foo")
-			req := httptest.NewRequest("POST", "/slack/events", bytes.NewReader(body))
-
+			req := httptest.NewRequest("POST", "/slack/events", bytes.NewBufferString(tt.body))
 			rec := httptest.NewRecorder()
 			handleSlackEvent("test-secret", tt.verifier, tt.publisher)(rec, req)
 
 			if rec.Code != tt.wantCode {
 				t.Errorf("got %d, want %d", rec.Code, tt.wantCode)
 			}
-
-			if !bytes.Equal(tt.publisher.(*fakePublisher).got, tt.wantBody) {
-				t.Errorf("published %q, want %q", tt.publisher.(*fakePublisher).got, body)
-			}
 		})
+	}
+}
+
+func TestHandleSlackEventParsesFields(t *testing.T) {
+	pub := &fakePublisher{}
+	req := httptest.NewRequest("POST", "/slack/events", bytes.NewBufferString(validSlackPayload))
+	rec := httptest.NewRecorder()
+	handleSlackEvent("test-secret", &fakeVerifier{}, pub)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+
+	event, ok := pub.got.(*threadopsv1.SlackEvent)
+	if !ok || event == nil {
+		t.Fatal("published message is not a *SlackEvent")
+	}
+	if event.TeamId != "T123" {
+		t.Errorf("TeamId = %q, want %q", event.TeamId, "T123")
+	}
+	if event.Event.GetType() != "app_mention" {
+		t.Errorf("Event.Type = %q, want %q", event.Event.GetType(), "app_mention")
 	}
 }

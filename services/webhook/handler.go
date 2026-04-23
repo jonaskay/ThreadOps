@@ -5,10 +5,14 @@ import (
 	"io"
 	"log"
 	"net/http"
+
+	threadopsv1 "github.com/jonaskay/threadops/internal/gen/threadops/v1"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 type Publisher interface {
-	Publish(ctx context.Context, data []byte) error
+	Publish(ctx context.Context, msg proto.Message) error
 }
 
 type Verifier interface {
@@ -30,7 +34,15 @@ func handleSlackEvent(signingSecret string, v Verifier, pub Publisher) func(w ht
 			return
 		}
 
-		if err := pub.Publish(context.Background(), body); err != nil {
+		var event threadopsv1.SlackEvent
+		unmarshaler := protojson.UnmarshalOptions{DiscardUnknown: true}
+		if err := unmarshaler.Unmarshal(body, &event); err != nil {
+			log.Printf("unmarshal: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		if err := pub.Publish(context.Background(), &event); err != nil {
 			log.Printf("publish: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

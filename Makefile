@@ -1,4 +1,4 @@
-.PHONY: test test-e2e build fmt vet tidy
+.PHONY: test test-e2e build fmt vet tidy generate
 
 test:
 	go test ./internal/... ./services/webhook/... ./services/processor/...
@@ -19,3 +19,6 @@ vet:
 
 tidy:
 	go work sync && for dir in internal services/webhook services/processor e2e; do (cd "$$dir" && go mod tidy); done
+
+generate:
+	protoc --go_out=. --go_opt=module=github.com/jonaskay/threadops proto/threadops/v1/slack_event.proto
