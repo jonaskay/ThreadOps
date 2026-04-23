@@ -1,6 +1,9 @@
 module github.com/jonaskay/threadops/webhook
 
-require github.com/jonaskay/threadops/internal v0.0.0
+require (
+	github.com/jonaskay/threadops/internal v0.0.0
+	google.golang.org/protobuf v1.36.11
+)
 
 require (
 	cloud.google.com/go v0.123.0 // indirect
@@ -36,7 +39,6 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260316180232-0b37fe3546d5 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260311181403-84a4fc48630c // indirect
 	google.golang.org/grpc v1.79.3 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 )
 
 replace github.com/jonaskay/threadops/internal => ../../internal

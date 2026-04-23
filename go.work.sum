@@ -59,9 +59,11 @@ cloud.google.com/go/gsuiteaddons v1.7.8/go.mod h1:DBKNHH4YXAdd/rd6zVvtOGAJNGo0ek
 cloud.google.com/go/iap v1.11.3/go.mod h1:+gXO0ClH62k2LVlfhHzrpiHQNyINlEVmGAE3+DB4ShU=
 cloud.google.com/go/ids v1.5.7/go.mod h1:N3ZQOIgIBwwOu2tzyhmh3JDT+kt8PcoKkn2BRT9Qe4A=
 cloud.google.com/go/iot v1.8.7/go.mod h1:HvVcypV8LPv1yTXSLCNK+YCtqGHhq+p0F3BXETfpN+U=
+cloud.google.com/go/kms v1.25.0/go.mod h1:XIdHkzfj0bUO3E+LvwPg+oc7s58/Ns8Nd8Sdtljihbk=
 cloud.google.com/go/language v1.14.6/go.mod h1:7y3J9OexQsfkWNGCxhT+7lb64pa60e12ZCoWDOHxJ1M=
 cloud.google.com/go/lifesciences v0.10.7/go.mod h1:v3AbTki9iWttEls/Wf4ag3EqeLRHofploOcpsLnu7iY=
 cloud.google.com/go/logging v1.13.2/go.mod h1:zaybliM3yun1J8mU2dVQ1/qDzjbOqEijZCn6hSBtKak=
+cloud.google.com/go/longrunning v0.8.0/go.mod h1:UmErU2Onzi+fKDg2gR7dusz11Pe26aknR4kHmJJqIfk=
 cloud.google.com/go/managedidentities v1.7.7/go.mod h1:nwNlMxtBo2YJMvsKXRtAD1bL41qiCI9npS7cbqrsJUs=
 cloud.google.com/go/maps v1.27.0/go.mod h1:6EWjz3AFh52w3qe2reWShQDmGRtryhP7NAfGolnr9+g=
 cloud.google.com/go/mediatranslation v0.9.7/go.mod h1:mz3v6PR7+Fd/1bYrRxNFGnd+p4wqdc/fyutqC5QHctw=
@@ -81,6 +83,7 @@ cloud.google.com/go/phishingprotection v0.9.7/go.mod h1:JTI4HNGyAbWolBoNOoCyCF0e
 cloud.google.com/go/policytroubleshooter v1.11.7/go.mod h1:JP/aQ+bUkt4Gz6lQXBi/+A/6nyNRZ0Pvxui5Xl9ieyk=
 cloud.google.com/go/privatecatalog v0.10.8/go.mod h1:BkLHi+rtAGYBt5DocXLytHhF0n6F03Tegxgty40Y7aA=
 cloud.google.com/go/pubsub v1.50.1 h1:fzbXpPyJnSGvWXF1jabhQeXyxdbCIkXTpjXHy7xviBM=
+cloud.google.com/go/pubsub v1.50.1/go.mod h1:6YVJv3MzWJUVdvQXG081sFvS0dWQOdnV+oTo++q/xFk=
 cloud.google.com/go/pubsublite v1.8.2/go.mod h1:4r8GSa9NznExjuLPEJlF1VjOPOpgf3IT6k8x/YgaOPI=
 cloud.google.com/go/recaptchaenterprise/v2 v2.21.0/go.mod h1:HxQYqZC2/zl2CvKN7jJEv71vEdDi1GMGNUiZxnpiuVI=
 cloud.google.com/go/recommendationengine v0.9.7/go.mod h1:snZ/FL147u86Jqpv1j95R+CyU5NvL/UzYiyDo6UByTM=
@@ -128,11 +131,14 @@ github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3x
 github.com/kr/text v0.2.0/go.mod h1:eLer722TekiGuMkidMxC/pM04lWEeraHUUmBw8l2grE=
 github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=
 github.com/spiffe/go-spiffe/v2 v2.6.0/go.mod h1:gm2SeUoMZEtpnzPNs2Csc0D/gX33k1xIx7lEzqblHEs=
+github.com/stoewer/go-strcase v1.3.1/go.mod h1:fAH5hQ5pehh+j3nZfvwdk2RgEgQjAoM8wodgtPmh1xo=
 github.com/zeebo/errs v1.4.0/go.mod h1:sgbWHsvVuTPHcqJJGQ1WhI5KbWlHYz+2+2C/LSEtCw4=
 go.opentelemetry.io/contrib/detectors/gcp v1.39.0/go.mod h1:t/OGqzHBa5v6RHZwrDBJ2OirWc+4q/w2fTbLZwAKjTk=
+go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
 golang.org/x/mod v0.33.0/go.mod h1:swjeQEj+6r7fODbD2cqrnje9PnziFuw4bmLbBZFrQ5w=
 golang.org/x/term v0.41.0/go.mod h1:3pfBgksrReYfZ5lvYM0kSO0LIkAl4Yl2bXOkKP7Ec2A=
 golang.org/x/tools v0.42.0/go.mod h1:Ma6lCIwGZvHK6XtgbswSoWroEkhugApmsXyrUmBhfr0=
 google.golang.org/appengine v1.6.8/go.mod h1:1jJ3jBArFh5pcgW8gCtRJnepW8FzD1V44FJffLiz/Ds=
 google.golang.org/genproto/googleapis/bytestream v0.0.0-20260311181403-84a4fc48630c/go.mod h1:9amqk/8LQWEC4RjyUxMx1DebyQ7hZB9gvl67bHmgZ2E=
 gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c/go.mod h1:JHkPIbrfpd72SG/EVd6muEfDQjcINNoR0C8j2r3qZ4Q=
+gotest.tools/v3 v3.5.2/go.mod h1:LtdLGcnqToBH83WByAAi/wiwSFCArdFIUV/xxN4pcjA=
