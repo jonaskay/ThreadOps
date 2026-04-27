@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -31,6 +32,16 @@ func handleSlackEvent(signingSecret string, v Verifier, pub Publisher) func(w ht
 		if err := v.Verify(signingSecret, r.Header, body); err != nil {
 			log.Printf("verify: %v", err)
 			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+
+		var peek struct {
+			Type      string `json:"type"`
+			Challenge string `json:"challenge"`
+		}
+		if err := json.Unmarshal(body, &peek); err == nil && peek.Type == "url_verification" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"challenge": peek.Challenge})
 			return
 		}
 

@@ -11,13 +11,15 @@ import (
 )
 
 type fakeSlackClient struct {
-	fetchThreadGot string
-	fetchThreadErr error
-	postReplyGot   string
-	postReplyErr   error
+	fetchChannelGot string
+	fetchThreadGot  string
+	fetchThreadErr  error
+	postReplyGot    string
+	postReplyErr    error
 }
 
-func (f *fakeSlackClient) FetchThread(ts string) (SlackThread, error) {
+func (f *fakeSlackClient) FetchThread(channel, ts string) (SlackThread, error) {
+	f.fetchChannelGot = channel
 	f.fetchThreadGot = ts
 
 	return SlackThread{
@@ -28,8 +30,9 @@ func (f *fakeSlackClient) FetchThread(ts string) (SlackThread, error) {
 		},
 	}, f.fetchThreadErr
 }
-func (f *fakeSlackClient) PostReply(url string) error {
-	f.postReplyGot = url
+
+func (f *fakeSlackClient) PostReply(channel, threadTS, issueURL string) error {
+	f.postReplyGot = issueURL
 
 	return f.postReplyErr
 }
@@ -159,10 +162,11 @@ func TestHandlePubsubPush(t *testing.T) {
 
 	for _, tt := range test {
 		t.Run(tt.name, func(t *testing.T) {
+			channel := "C12345"
 			threadTs := "1234567890.123456"
 			envelope, _ := json.Marshal(PubSubEnvelope{
 				Message: PubSubMessage{
-					Data: []byte(`{"type":"event_callback","event":{"type":"app_mention","thread_ts":"` + threadTs + `","ts":"` + threadTs + `"}}`),
+					Data: []byte(`{"type":"event_callback","event":{"type":"app_mention","channel":"` + channel + `","thread_ts":"` + threadTs + `","ts":"` + threadTs + `"}}`),
 				},
 			})
 
@@ -174,8 +178,12 @@ func TestHandlePubsubPush(t *testing.T) {
 				t.Errorf("got %d, want %d", rec.Code, tt.wantCode)
 			}
 
-			if tt.slackClient.(*fakeSlackClient).fetchThreadGot != threadTs {
-				t.Errorf("slack got %q, want %q", tt.slackClient.(*fakeSlackClient).fetchThreadGot, threadTs)
+			fake := tt.slackClient.(*fakeSlackClient)
+			if fake.fetchChannelGot != channel {
+				t.Errorf("slack channel got %q, want %q", fake.fetchChannelGot, channel)
+			}
+			if fake.fetchThreadGot != threadTs {
+				t.Errorf("slack thread_ts got %q, want %q", fake.fetchThreadGot, threadTs)
 			}
 
 			if !reflect.DeepEqual(tt.llmProvider.(*fakeLLMProvider).got, tt.wantLLM) {
@@ -186,8 +194,8 @@ func TestHandlePubsubPush(t *testing.T) {
 				t.Errorf("github got %v, want %v", tt.githubClient.(*fakeGitHubClient).got, tt.wantGitHub)
 			}
 
-			if tt.slackClient.(*fakeSlackClient).postReplyGot != tt.wantIssueURL {
-				t.Errorf("slack got %q, want %q", tt.slackClient.(*fakeSlackClient).postReplyGot, tt.wantIssueURL)
+			if fake.postReplyGot != tt.wantIssueURL {
+				t.Errorf("slack postReply got %q, want %q", fake.postReplyGot, tt.wantIssueURL)
 			}
 		})
 	}
