@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,13 @@ func TestHandleSlackEvent(t *testing.T) {
 			publisher: &fakePublisher{err: nil},
 			wantCode:  http.StatusBadRequest,
 		},
+		{
+			name:      "url_verification challenge",
+			body:      `{"type":"url_verification","challenge":"abc123","token":"test-token"}`,
+			verifier:  &fakeVerifier{err: nil},
+			publisher: &fakePublisher{err: nil},
+			wantCode:  http.StatusOK,
+		},
 	}
 
 	for _, tt := range tests {
@@ -96,6 +104,24 @@ func TestHandleSlackEvent(t *testing.T) {
 				t.Errorf("got %d, want %d", rec.Code, tt.wantCode)
 			}
 		})
+	}
+}
+
+func TestHandleSlackEventURLVerification(t *testing.T) {
+	body := `{"type":"url_verification","challenge":"abc123","token":"test-token"}`
+	req := httptest.NewRequest("POST", "/slack/events", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	handleSlackEvent("test-secret", &fakeVerifier{}, &fakePublisher{})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["challenge"] != "abc123" {
+		t.Errorf("challenge = %q, want %q", resp["challenge"], "abc123")
 	}
 }
 

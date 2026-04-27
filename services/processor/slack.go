@@ -23,8 +23,8 @@ func newSlackHTTPClient(baseURL, botToken string) *slackHTTPClient {
 	}
 }
 
-func (c *slackHTTPClient) FetchThread(ts string) (SlackThread, error) {
-	u := fmt.Sprintf("%s/api/conversations.replies?ts=%s", c.baseURL, url.QueryEscape(ts))
+func (c *slackHTTPClient) FetchThread(channel, ts string) (SlackThread, error) {
+	u := fmt.Sprintf("%s/api/conversations.replies?channel=%s&ts=%s", c.baseURL, url.QueryEscape(channel), url.QueryEscape(ts))
 	req, err := http.NewRequest("GET", u, nil)
 	if err != nil {
 		return SlackThread{}, err
@@ -48,9 +48,11 @@ func (c *slackHTTPClient) FetchThread(ts string) (SlackThread, error) {
 	return thread, nil
 }
 
-func (c *slackHTTPClient) PostReply(issueURL string) error {
+func (c *slackHTTPClient) PostReply(channel, threadTS, issueURL string) error {
 	body, _ := json.Marshal(map[string]string{
-		"text": "Issue created: " + issueURL,
+		"channel":   channel,
+		"thread_ts": threadTS,
+		"text":      "Issue created: " + issueURL,
 	})
 	req, err := http.NewRequest("POST", c.baseURL+"/api/chat.postMessage", bytes.NewReader(body))
 	if err != nil {

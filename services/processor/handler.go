@@ -16,8 +16,8 @@ type SlackMessage struct {
 }
 
 type SlackClient interface {
-	FetchThread(ts string) (SlackThread, error)
-	PostReply(url string) error
+	FetchThread(channel, ts string) (SlackThread, error)
+	PostReply(channel, threadTS, issueURL string) error
 }
 
 type Issue struct {
@@ -51,6 +51,7 @@ type SlackEvent struct {
 }
 
 type SlackInnerEvent struct {
+	Channel  string `json:"channel"`
 	TS       string `json:"ts"`
 	ThreadTS string `json:"thread_ts"`
 }
@@ -81,6 +82,13 @@ func handlePubsubPush(slackClient SlackClient, llmProvider LLMProvider, githubCl
 			return
 		}
 
+		channel := event.Event.Channel
+		if channel == "" {
+			log.Printf("missing channel in event")
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
 		threadTS := event.threadTS()
 		if threadTS == "" {
 			log.Printf("missing thread timestamp in event")
@@ -88,7 +96,7 @@ func handlePubsubPush(slackClient SlackClient, llmProvider LLMProvider, githubCl
 			return
 		}
 
-		thread, err := slackClient.FetchThread(threadTS)
+		thread, err := slackClient.FetchThread(channel, threadTS)
 		if err != nil {
 			log.Printf("fetch thread: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -102,14 +110,14 @@ func handlePubsubPush(slackClient SlackClient, llmProvider LLMProvider, githubCl
 			return
 		}
 
-		url, err := githubClient.CreateIssue(issue)
+		issueURL, err := githubClient.CreateIssue(issue)
 		if err != nil {
 			log.Printf("create issue: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		if err := slackClient.PostReply(url); err != nil {
+		if err := slackClient.PostReply(channel, threadTS, issueURL); err != nil {
 			log.Printf("post reply: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

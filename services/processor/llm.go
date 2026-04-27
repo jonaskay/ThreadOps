@@ -53,7 +53,7 @@ func (c *anthropicLLM) Query(transcript SlackThread) (Issue, error) {
 	}
 
 	prompt := "Convert the following Slack thread into a GitHub issue. " +
-		"Respond with a single JSON object containing \"title\", \"body\", and \"labels\" fields.\n\n" +
+		"Respond with ONLY a single JSON object — no explanation, no markdown — containing \"title\", \"body\", and \"labels\" fields.\n\n" +
 		"Thread:\n" + b.String()
 
 	reqBody, _ := json.Marshal(anthropicRequest{
@@ -90,10 +90,30 @@ func (c *anthropicLLM) Query(transcript SlackThread) (Issue, error) {
 		return Issue{}, fmt.Errorf("anthropic response has no content")
 	}
 
+	text := extractJSON(r.Content[0].Text)
 	var issue Issue
-	if err := json.Unmarshal([]byte(r.Content[0].Text), &issue); err != nil {
+	if err := json.Unmarshal([]byte(text), &issue); err != nil {
 		return Issue{}, fmt.Errorf("parse issue JSON from llm: %w", err)
 	}
 
 	return issue, nil
+}
+
+// extractJSON finds the first JSON object in s, stripping any surrounding prose or code fences.
+func extractJSON(s string) string {
+	s = strings.TrimSpace(s)
+	for _, fence := range []string{"```json", "```"} {
+		if strings.HasPrefix(s, fence) {
+			s = strings.TrimPrefix(s, fence)
+			s = strings.TrimSuffix(s, "```")
+			return strings.TrimSpace(s)
+		}
+	}
+	// Fallback: extract the first {...} block in case the LLM added surrounding prose.
+	start := strings.Index(s, "{")
+	end := strings.LastIndex(s, "}")
+	if start != -1 && end > start {
+		return s[start : end+1]
+	}
+	return s
 }
